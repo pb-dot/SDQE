@@ -1,0 +1,198 @@
+The Doc will contain my learnings from this project and also serve as Readme
+
+Project : Relational_Data_Engine -> structured data storage with minimal query support
+
+-------What this prog (db engine) does -->
+Client(User of this prog[db engine]) will interact with this prog in CLI REPL
+(read eval print loop)mode and first enter/create databases and tables inside them.
+Then use CRUD syntax supported by our prog to ask Query on the tables he entered and get results.
+The tables persist on disk in the form of  database (directory) which can have multiple tables(1 table = 2files)
+
+
+
+------Restriction I have placed on by db engine-->
+A. Data type supported by columns [int , string(255 chars max length)]
+B. No parallel clients/process that will interact with dbs
+C. No transaction/crash recovery supported
+D. CRUD(create read update delete) Syntax supported:-
+    1. SELECT <col names> FROM <table name> INDEX_BY <expr> FILTER_BY <expr>
+    2. CREATE_DB <database name>
+    3. CREATE_TABLE <table_name> IN <database_name> WITH_COL<(INT,cola) ,(STR ,colb) ,(STR ,colc)>
+    WITH_INDEX <colc>
+    4. INSERT_ROW <cola = 55, colb="str1", colc="str2"> IN <table_name , db_name>
+    5. DELETE_ROW <expr>
+    6. UPDATE_ROW <cola = 55, colb="str1", colc="str2">  WHERE <expr>
+INDEX_BY <expr> can be col_name >50 and col_name <100 where col_name will act as Index.
+Both INDEX_BY and FILTER_BY are optional.
+E. Query can Run 1 table at time ie No joins / order by (sort)
+
+
+------ Implementation Caveats ----------->
+Each Table will persit on disk in form of 2 files table.data and table.idx
+
+---> table.data will have actual records/rows of the table stored in fixed length format
+ie           Col1<4> Col2<255> Col3<255> ... 1st line header <col name and sizes>
+              09       abc       bc/0
+              87       d/0/0     ezv
+if int then 8 bytes and if String then 255 chars use padding to keep fixed size
+If wanted to support variable length then have to use the format of <len><val>
+Fixed length ==> Each Row will have same size.==> Instead of scanning Each Row for end of line
+in order to go to the next row (ie sequential search).We can now Randomly access each Row
+with its offset in bytes[Row number * Each Row siz] (use lseek sys call to jump to that row).
+table.data is append only file. Add each row to the end of the file.
+
+----> table.idx is a B+tree on disk . Every node of a tree has some data and some pointer.
+In this case Data is key-value pair. [Key = column selected as index] [Value is Row Number in table.data]
+Normally Data structures are in-memory(ram) as We make nodes --> as struct objects and malloc
+them. To persit them in disk we have to write the nodes in disc. Now think disc(files) are
+just big char arr[][] (ie Arr of lines). We can treat them as so due to device drivers.
+To write a node in disc --> soln convert struct to char[]ie serialize it.
+ We can use the below format as B+tree nodes and pack it into char [] instead of using struct
+| type(internal/leaf node) | nkeys | child pointers | key-value pairs |
+| 2B                       |2B     | nkeys * 8B     | nkeys * 2*8B |
+
+Now each node of the B-tree will be a each line in the file table.idx
+
+Terminology --> File --Array of Blocks/Nodes/Pages
+B-tree has Blocks/Nodes/Pages . 1 Node size = INT * 1 OS page size(4096B).
+
+Disk IO reads occurs 512B at a time (1 sector at a time).
+OS buffers them(disk IO) and keeps them in a cache known as OS page.
+
+Why B+tree (Height balanced n-ary tree) --> Each level of the tree is a disk read in
+a lookup, and n-ary trees are shorter than binary trees for the same number
+of keys(n) (lognN vs. log2N), thus n-ary trees are used for fewer disk reads per
+lookup , plus Height balanced --> Always lognN search.
+
+Use Fsync when writing to file :-        fsync()  transfers  ("flushes")  all  modified in-core data of (i.e., modified buffer cache pages for) the file re‐
+       ferred to by the file descriptor fd to the disk device (or other permanent storage device) so that all changed  in‐
+       formation  can be retrieved even if the system crashes or is rebooted.  This includes writing through or flushing a
+       disk cache if present.  The call blocks until the device reports that the transfer has completed.
+Avoid in-place updates by renaming files and then fsync on parent dir
+
+Search Query Processing -->
+Step1 : Parse the Search query and find the apt key
+Step2 : Search the apt key in (B+tree) and get the Row id in table.data as value
+Step3 : Fetch the row using row-id and display it as result
+
+
+------------- About B+tree Implementation -----------------------
+Here's my proposed approach to create a durable, consistent, disk-based B-Tree.
+
+This approach is based on using a single file, fixed-size blocks (pages), shadow paging (copy-on-write) for consistency, and a metadata header to manage the tree.
+
+1. File and Metadata Format
+We'll use a single file (e.g., table.idx). The file will be divided into fixed-size blocks, for example, 4096 bytes (4KB). This is the standard page size for most operating systems and databases, and it simplifies I/O.
+
+Block 0: The Metadata Header--> This block is special. It's always at offset 0 and stores the global information about the tree. It's the only block we'll ever (carefully) overwrite in place.
+
+Blocks 1...N: Node Data --> All other blocks in the file will store the B-Tree nodes (one node per block).
+
+Metadata Header (Block 0) Layout
+This block will contain:
+
+Magic Number (e.g., 8 bytes): A custom byte sequence like "\xDE\xAD\xBE\xEFBTR3" to identify this file as our B-Tree.
+
+Key Type (1 byte): A flag to define the key type for this entire tree.
+
+0x00: Keys are int (4 bytes).
+
+0x01: Keys are char[255] (255 bytes).
+
+(Note: A single tree cannot mix key types. You create either an int-keyed tree or a string-keyed tree.)
+
+Minimum Degree t (4 bytes): The minimum degree of the B-Tree. This value will be calculated when the tree is created, based on the key_type and block_size.
+
+Root Node Offset (8 bytes): The long long file offset (e.g., 4096, 8192, etc.) of the current root node. This is the most critical piece of data.
+
+Free List Head Offset (8 bytes): The file offset of the first block in a linked-list of free blocks (for block reuse). 0 means no free blocks.
+
+2. Node Format (Serialization)
+Each node will be read/written as a single 4096-byte block. The C++ BTreeNode class will be replaced by a NodePage struct/class that is purely for serialization. It will not contain new/delete or pointers, but rather fixed-size arrays.
+
+Pointers (BTreeNode** children) will be replaced with 8-byte file offsets.
+
+Node Block Layout (4096 bytes)
+Node Header (e.g., 16 bytes)
+
+is_leaf (1 byte): 1 if leaf, 0 if internal.
+
+n (4 bytes): The current number of keys in this node.
+
+(Padding, 11 bytes): To align the following data.
+
+Data Arrays This is the main body of the node. The layout depends on the key_type stored in the metadata header. The t value dictates the size of these arrays.
+
+Array 1: Child Offsets (Size: 2t * 8 bytes)
+
+An array of 2t long long file offsets.
+
+This is the first array, as it's present in all nodes (leaf or internal, though leaves just won't use it).
+
+Array 2: Values (Size: (2t - 1) * 4 bytes)
+
+An array of (2t - 1) int values.
+
+Array 3: Keys (Size: depends on key_type)
+
+If key_type == 0 (int): An array of (2t - 1) int keys. (Size: (2t - 1) * 4 bytes)
+
+If key_type == 1 (string): An array of (2t - 1) char[255] keys. (Size: (2t - 1) * 255 bytes)
+
+Free/Unused Space: The rest of the 4096-byte block.
+
+When a tree is created (e.g., BTree::create("db_file", BTree::KEY_STRING)), we will calculate the largest t that allows all these arrays to fit within 4096 - 16 bytes and store that t in the metadata header.
+
+3. Durability & Consistency Approach
+This is the most critical part. If we just overwrite nodes in place, a power failure during an operation (like a node split) will leave the file in a corrupted, inconsistent state.
+
+My proposed approach is Shadow Paging (Copy-on-Write).
+
+This method never overwrites a "live" node.
+
+How it Works (e.g., for an Insert):
+Find Path: We read the root_node_offset from the metadata header (Block 0). We traverse the tree by reading nodes from their file offsets (e.g., root at 4096, child at 8192, leaf at 12288). We keep this path in memory.
+
+Modify (Copy-on-Write): We find the leaf node (at 12288) where the key should be inserted.
+
+We do not modify the node at 12288.
+
+Instead, we copy its data into a new in-memory buffer, add the new key/value, and write this modified node to a brand-new, unused block at the end of the file (or from the free list), e.g., at offset 16384.
+
+Propagate Up:
+
+The parent node (at 8192) is now out-of-date. Its child pointer still says 12288, but it needs to point to our new node at 16384.
+
+So, we copy-on-write the parent. We read 8192, make a copy in memory, update the child offset from 12288 to 16384, and write this modified parent to another new block, e.g., at offset 20480.
+
+Propagate to Root:
+
+This process repeats all the way up to the root. The original root (at 4096) is copied, its child pointer is updated (from 8192 to 20480), and this new root node is written to a new block, e.g., at offset 24576.
+
+Atomic Commit (The "Flip"):
+
+At this point, the entire old tree (starting at offset 4096) is still untouched and perfectly valid on disk. We have just built a complete new tree branch in new blocks.
+
+The only thing left to do is make the new tree "live".
+
+We perform a single, atomic write to the Metadata Header (Block 0). We update the root_node_offset from 4096 to 24576.
+
+We then immediately call fsync() on the file handle to force this one-block change to the physical disk.
+
+Crash-Safety Analysis:
+If power fails before the "Flip" (Step 5):
+
+No problem. When we restart, we read Block 0. The root_node_offset is still 4096. The old, consistent tree is all we see. The new blocks (16384, 20480, 24576) are just garbage data at the end of the file that will eventually be reclaimed. The insert operation is simply lost (which is the correct "rollback" behavior).
+
+If power fails after the "Flip" (Step 5):
+
+No problem. When we restart, we read Block 0. The root_node_offset is 24576. This points to our new, valid root, which points to the new, valid branch. The insert is successful. The old blocks (4096, 8192, 12288) are now garbage and can be added to the free list.
+
+This copy-on-write mechanism provides perfect ACI (Atomicity, Consistency, Isolation) for each operation. Durability is provided by the fsync() call on the metadata block.
+
+
+PagedFile: A class to manage the file, block allocation, and the free list.
+
+Node: A class that can serialize/deserialize to/from a 4KB byte buffer.
+
+BTree: The main class, modified to use  PagedFile and to implement the shadow paging logic instead of in-memory pointers.

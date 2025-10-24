@@ -101,3 +101,12 @@ Column Schema::get_index_column() const {
 KeyType Schema::get_index_key_type() const {
     return (get_index_column().type == DataType::INT) ? KeyType::INTEGER : KeyType::STRING;
 }
+
+std::optional<Column> Schema::get_column(const std::string& col_name) const {
+    for (const auto& col : columns) {
+        if (col.name == col_name) {
+            return col;
+        }
+    }
+    return std::nullopt; // Return an empty optional if not found
+}

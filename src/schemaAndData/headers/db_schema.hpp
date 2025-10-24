@@ -5,6 +5,7 @@
 #include <map>
 #include <stdexcept>
 #include <cstdint>
+#include <optional>
 #include "db_btree.hpp"
 
 // --- Constants ---
@@ -68,4 +69,9 @@ public:
      * @brief Gets the B-Tree KeyType (INTEGER/STRING) for the index column.
      */
     KeyType get_index_key_type() const;
+
+    /**
+     * @brief Gets the Column struct for a given column name.
+     */
+    std::optional<Column> get_column(const std::string& col_name) const;
 };

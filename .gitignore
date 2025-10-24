@@ -1,4 +1,4 @@
 build
 .vscode
 src/*.db
-test_db
+*_db

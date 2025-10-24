@@ -6,21 +6,88 @@
 
 namespace fs = std::filesystem;
 
+// --- HELPER FUNCTION ---
+/**
+ * @brief Converts a Value variant to a printable string.
+ */
+std::string value_to_string(const Value& val) {
+    return std::visit([](auto&& arg) -> std::string {
+        using T = std::decay_t<decltype(arg)>;
+        if constexpr (std::is_same_v<T, int64_t>) {
+            return std::to_string(arg);
+        } else if constexpr (std::is_same_v<T, std::string>) {
+            return "'" + arg + "'";
+        }
+    }, val);
+}
+
+// --- Helper Function for Selective SELECT ---
+
+/**
+ * @brief Prints a record, but only the columns specified in sel_cols.
+ */
+static void print_record_selective(const Record& record, const Schema& schema, const std::vector<std::string>& sel_cols) {
+    std::cout << "{ ";
+    bool first = true;
+
+    // If {*}, print all columns in schema order
+    if (sel_cols.size() == 1 && sel_cols[0] == "*") {
+        for (const auto& col : schema.columns) {
+            auto it = record.values.find(col.name);
+            if (it == record.values.end()) continue;
+
+            if (!first) std::cout << ", ";
+            std::cout << col.name << ": ";
+            if (col.type == DataType::INT) {
+                std::cout << std::get<int64_t>(it->second);
+            } else {
+                std::cout << "'" << std::get<std::string>(it->second) << "'";
+            }
+            first = false;
+        }
+    } else {
+        // Print only specified columns
+        for (const std::string& col_name : sel_cols) {
+            auto it = record.values.find(col_name);
+            auto col_schema = schema.get_column(col_name);
+
+            if (it == record.values.end() || !col_schema) {
+                std::cerr << "Warning: Column '" << col_name << "' not found. Skipping." << std::endl;
+                continue;
+            }
+
+            if (!first) std::cout << ", ";
+            std::cout << col_name << ": ";
+            if (col_schema->type == DataType::INT) {
+                std::cout << std::get<int64_t>(it->second);
+            } else {
+                std::cout << "'" << std::get<std::string>(it->second) << "'";
+            }
+            first = false;
+        }
+    }
+    std::cout << " }" << std::endl;
+}
+
+// --- Engine Implementation ---
+
 DatabaseEngine::DatabaseEngine() {
     std::cout << "Database Engine Initialized." << std::endl;
 }
 
-// --- Main Execution ---
-
 void DatabaseEngine::execute(const std::string& query) {
+
+    std::cout << "Query Received :-> "<<query <<"\n";
     try {
         ParsedCommand parsed_command = parser.parse(query);
 
+        // std::visit calls the correct overloaded lambda for the variant type
         std::visit([this](auto&& cmd) {
             using T = std::decay_t<decltype(cmd)>;
             if constexpr (std::is_same_v<T, CreateDbCommand>) {
                 exec_create_db(cmd);
             } else if constexpr (std::is_same_v<T, CreateTableCommand>) {
+                // CreateTable needs to be modified for default index
                 CreateTableCommand modifiable_cmd = cmd;
                 exec_create_table(modifiable_cmd);
             } else if constexpr (std::is_same_v<T, InsertRowCommand>) {
@@ -41,9 +108,8 @@ void DatabaseEngine::execute(const std::string& query) {
     }
 }
 
-// --- Execution Handlers (Only exec_select is updated) ---
+// --- Execution Handlers ---
 
-// ... exec_create_db, exec_create_table, exec_insert_row are unchanged ...
 void DatabaseEngine::exec_create_db(const CreateDbCommand& cmd) {
     if (fs::create_directory(cmd.db_name)) {
         std::cout << "Database '" << cmd.db_name << "' created." << std::endl;
@@ -55,6 +121,7 @@ void DatabaseEngine::exec_create_db(const CreateDbCommand& cmd) {
 void DatabaseEngine::exec_create_table(CreateTableCommand& cmd) {
     Schema schema_to_create;
 
+    // Handle default index
     if (cmd.index_column_name.empty()) {
         cmd.index_column_name = "row_num";
         cmd.columns.insert(cmd.columns.begin(), {"INT", "row_num"});
@@ -90,6 +157,7 @@ void DatabaseEngine::exec_insert_row(const InsertRowCommand& cmd) {
 
     Schema& schema = table.get_schema();
 
+    // Handle default index (auto-increment)
     if (schema.index_column_name == "row_num" && record.values.find("row_num") == record.values.end()) {
         int64_t next_id = schema.next_auto_increment_id++;
         record.values["row_num"] = next_id;
@@ -103,7 +171,6 @@ void DatabaseEngine::exec_insert_row(const InsertRowCommand& cmd) {
     }
 }
 
-
 void DatabaseEngine::exec_select(const SelectCommand& cmd) {
     std::cout << "--- Executing SELECT ---" << std::endl;
     std::string base_path = get_base_path(cmd.db_name, cmd.table_name);
@@ -113,52 +180,97 @@ void DatabaseEngine::exec_select(const SelectCommand& cmd) {
         throw std::runtime_error("Table '" + cmd.table_name + "' not found.");
     }
 
+    Schema& schema = table.get_schema();
+
     if (cmd.where_clause) {
-        // We have a WHERE_INDEX_IS clause
+        // --- 1. Index Search (Point or Range) ---
         auto& clause = *cmd.where_clause;
         if (std::holds_alternative<Predicate>(clause)) {
-            // Simple: WHERE id = 10
+            // Point search
             Predicate p = std::get<Predicate>(clause);
-            std::cout << "Point search: " << p.column_name << " " << p.op << " ..." << std::endl;
+            std::cout << "Point search: " << p.column_name << " " << p.op << "  "<< value_to_string(p.value) << std::endl;
             auto record = table.find_record_by_key(p.value);
             if(record) {
-                record->print(table.get_schema());
+                print_record_selective(*record, schema, cmd.columns);
             } else {
                 std::cout << "No record found." << std::endl;
             }
         } else {
-            // Range: WHERE id > 5 AND id < 20
+            // Range search
             RangePredicate p = std::get<RangePredicate>(clause);
-            std::cout << "Range search: " << p.column_name << " " << p.op_low << " ... AND "
-                      << p.op_high << " ..." << std::endl;
-            // TODO: Implement this using btree.rangeSearch()
-            std::cout << "Range search (Not Implemented Yet)" << std::endl;
+            std::cout << "Range search: " << p.column_name << " " << p.op_low << " "<< value_to_string(p.val_low)<<" AND "
+                      << p.op_high << "  "<< value_to_string(p.val_high) << std::endl;
+            auto records = table.find_records_by_range(p.val_low, p.val_high);
+            if (records.empty()) {
+                std::cout << "No records found in range." << std::endl;
+            }
+            for (const auto& record : records) {
+                print_record_selective(*record, schema, cmd.columns);
+            }
         }
     } else {
-        // No WHERE clause: Full table scan
-        // TODO: Implement this by reading the .data file from start to finish
-        std::cout << "Full table scan (Not Implemented Yet)" << std::endl;
+        // --- 2. Full Table Scan (No WHERE_INDEX_IS) ---
+        std::cout << "Full table scan:" << std::endl;
+        size_t record_size = schema.get_record_size();
+        std::fstream& data_file = table.get_data_file_stream();
+
+        data_file.seekg(0, std::ios::beg);
+
+        std::vector<char> buffer(record_size);
+        int count = 0;
+        while (data_file.read(buffer.data(), record_size)) {
+            // Check for deleted record (tombstone)
+            if (buffer[0] == '\0') {
+                continue;
+            }
+
+            Record record;
+            record.deserialize(buffer.data(), schema);
+            print_record_selective(record, schema, cmd.columns);
+            count++;
+        }
+        if (count == 0) {
+            std::cout << "Table is empty." << std::endl;
+        }
     }
 }
 
 void DatabaseEngine::exec_delete_row(const DeleteCommand& cmd) {
     std::cout << "--- Executing DELETE ---" << std::endl;
-    // TODO: Implement Delete
-    std::cout << "Delete (Not Implemented Yet) for " << cmd.where_clause.column_name
-              << " = ..." << std::endl;
+    std::string base_path = get_base_path(cmd.db_name, cmd.table_name);
+    Table table(base_path + ".schema", base_path + ".idx", base_path + ".data");
+
+    if (!table.open()) {
+        throw std::runtime_error("Table '" + cmd.table_name + "' not found.");
+    }
+
+    if (table.delete_record_by_key(cmd.where_clause.value)) {
+        std::cout << "Record deleted successfully." << std::endl;
+    } else {
+        std::cout << "Failed to delete record." << std::endl;
+    }
 }
 
 void DatabaseEngine::exec_update_row(const UpdateCommand& cmd) {
     std::cout << "--- Executing UPDATE ---" << std::endl;
-    // TODO: Implement Update
-    std::cout << "Update (Not Implemented Yet) for " << cmd.where_clause.column_name
-              << " = ..." << std::endl;
+    std::string base_path = get_base_path(cmd.db_name, cmd.table_name);
+    Table table(base_path + ".schema", base_path + ".idx", base_path + ".data");
+
+    if (!table.open()) {
+        throw std::runtime_error("Table '" + cmd.table_name + "' not found.");
+    }
+
+    if (table.update_record_by_key(cmd.where_clause.value, cmd.set_values)) {
+        std::cout << "Record updated successfully." << std::endl;
+    } else {
+        std::cout << "Failed to update record." << std::endl;
+    }
 }
 
-
-// --- Helpers ---
+// --- Helper ---
 
 std::string DatabaseEngine::get_base_path(const std::string& db_name, const std::string& table_name) {
+    // Basic path sanitization
     if (db_name.find("..") != std::string::npos || table_name.find("..") != std::string::npos) {
         throw std::runtime_error("Invalid path: '..' is not allowed.");
     }

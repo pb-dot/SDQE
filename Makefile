@@ -2,13 +2,10 @@
 # make <target> BUILD=release   ; if BUILD=  is not specified then debug build
 # target can be [btree , schema , query, libs ,tests , clean]
 # if target not specified build the exe from (src/main.cpp)
-# btree , schema , query are for their individual static libs ,libs to make all libs
+# btree , schema , query are for their individual shared libs ,libs to make all libs
 # tests for making each cpp file inside test into executable
 
 ########################################################################################
-# Makefile for multi-module C++ project (located in the project root)
-# Switched from static (.a) to shared (.so) libraries.
-
 # --- 1. Global Configuration ---
 SRC_DIR := src
 BUILD_DIR := build

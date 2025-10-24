@@ -4,7 +4,7 @@
 #include <map>
 #include <memory>
 #include "db_table.hpp"
-#include "db_parser.hpp"
+#include "db_parser.hpp" // Our robust parser
 
 /**
  * @class DatabaseEngine
@@ -23,7 +23,7 @@ public:
 private:
     // --- Execution Handlers ---
     void exec_create_db(const CreateDbCommand& cmd);
-    void exec_create_table(CreateTableCommand& cmd); // non-const
+    void exec_create_table(CreateTableCommand& cmd); // non-const for default index
     void exec_insert_row(const InsertRowCommand& cmd);
     void exec_select(const SelectCommand& cmd);
     void exec_delete_row(const DeleteCommand& cmd);
@@ -33,5 +33,5 @@ private:
     std::string get_base_path(const std::string& db_name, const std::string& table_name);
 
     // --- State ---
-    Parser parser; // The parser is now a member
+    Parser parser; // The parser is a member
 };

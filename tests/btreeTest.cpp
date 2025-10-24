@@ -1,6 +1,7 @@
 #include "db_btree.hpp"
 #include <iostream>
 #include <vector>
+#include <filesystem> // For system("rm") replacement
 
 void testIntTree() {
     const std::string filename = "int_tree.db";
@@ -134,6 +135,10 @@ void testStringTree() {
 }
 
 int main() {
+    // Clean up old files for a fresh test
+    std::filesystem::remove_all("test_db");
+    std::filesystem::remove("int_tree.db");    // From your original test
+    std::filesystem::remove("string_tree.db"); // From your original test
     testIntTree();
     testStringTree();
     return 0;

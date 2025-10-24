@@ -10,11 +10,12 @@
 // This struct represents the layout of the first block in the file.
 struct MetadataHeader {
     char magic[16];          // Magic number to identify file type
-    KeyType key_type;        // Type of keys stored in this tree
-    uint32_t t;              // Minimum degree of the B-Tree [2t child 2t-1 max keys]
+    KeyType key_type;        // Type of keys stored in this tree (int/string)
+    uint32_t t;              // [Each Node has 2t child 2t-1 max keys]
     offset_t root_offset;    // File offset of the root node
     offset_t free_list_head; // File offset of the first free block
     uint64_t block_count;    // Total number of blocks in the file
+    //block_count is an optimization that lets us instantly calculate the offset for a new block, avoiding a slow "seek-to-end" system call.
 
     // Constructor to initialize default values
     MetadataHeader()

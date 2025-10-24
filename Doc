@@ -375,3 +375,229 @@ Crash Analysis (Phase 2):
 If we crash during this process: On restart, we read Block 0. We get the new root_offset (from Phase 1, which succeeded) and the old free_list_head (because the second commit never finished). The blocks we were trying to free are simply... still leaked. Again, no corruption. The database is 100% safe.
 
 ---------------------------------------------------------------
+***********************How B-tree Insert Works 
+Scenario 1: Simple Insert (Leaf has space)
+This is the most common case, equivalent to a simple leaf deletion. The key insight here, which is fundamental to our CoW design, is that even a "simple" insert that doesn't cause a split still causes a full rewrite of the entire path from the leaf to the root.
+
+Let's trace the insertion of a new key (4, 40).
+
+Initial State: The tree is valid. The path to the correct leaf is Root_A (0x1000) -> Parent_A (0x2000) -> Leaf_A (0x3000). Leaf_A is not full.
+
+Transaction Goal: Insert (4, 40) into Leaf_A.
+
+1. Find Path:
+
+insertRecursive calls insertNonFull, which traverses the tree. It arrives at Parent_A (0x2000) and determines it must descend into Leaf_A (0x3000).
+
+It checks if Leaf_A is full. It is not.
+
+2. Copy-on-Write (The Leaf):
+
+The function reads Leaf_A (0x3000) into memory.
+
+It adds the new key (4, 40) to the in-memory copy.
+
+It calls writeNode() for this modified leaf.
+
+writeNode() calls allocateBlock(), which returns a new block, e.g., 0x8000.
+
+The modified leaf (now Leaf_B) is written to 0x8000.
+
+3. Free List (Staging):
+
+insertNonFull (at the leaf level) returns the new offset 0x8000 to its caller.
+
+The caller (the insertNonFull for Parent_A) sees that old_child_offset (0x3000) != new_child_offset (0x8000).
+
+This change must be reflected in the parent. The old leaf block is now stale.
+
+The parent's insertNonFull function calls file.freeBlock(0x3000).
+
+This adds 0x3000 to the in-memory pending_free_list.
+
+4. Propagate Up (CoW):
+
+The insertNonFull for Parent_A (at 0x2000) now has an invalid child pointer.
+
+It updates its in-memory copy, changing the child pointer from 0x3000 to 0x8000.
+
+It calls writeNode() for this modified parent.
+
+writeNode() gets a new block (e.g., 0x9000) and writes the modified parent (Parent_B) to it.
+
+The function then calls file.freeBlock(0x2000), adding the old parent to the pending_free_list.
+
+5. Commit (The Two Phases):
+
+This CoW rewrite continues all the way up to the root, creating a new root (Root_B at 0xA000) and freeing the old root (Root_A at 0x1000).
+
+The top-level insert function receives the final new root offset, 0xA000.
+
+It calls file.commitRootAndGarbageCollect(0xA000).
+
+Phase 1 (Data Commit): The file header (Block 0) is updated: root_offset = 0xA000. This is flushed to disk.
+
+At this instant, the new tree is "live." The old blocks (0x1000, 0x2000, 0x3000) are all orphaned (leaked), but not corrupt.
+
+Phase 2 (Garbage Commit): The commitFreeList function runs. It takes [0x1000, 0x2000, 0x3000] from the pending_free_list, writes the "next" pointers into them, and commits the new free_list_head = 0x1000 to Block 0. The old blocks are now safely recycled.
+
+Scenario 2: Complex Insert (Leaf is full, causing a split)
+This is the counterpart to the deletion merge.
+
+Initial State: Path is Root_A (0x1000) -> Parent_A (0x2000). The insert function must descend into Child_A (0x3000).
+
+Transaction Goal: Insert key (25, 250).
+
+Trigger: The insertNonFull for Parent_A checks its child (Child_A at 0x3000) and finds it is full (node->n == 2*t - 1).
+
+1. Call splitChild():
+
+Before it can descend, insertNonFull must call splitChild.
+
+splitChild is called with the parent (Parent_A at 0x2000) and the index of the full child (Child_A at 0x3000).
+
+2. Copy-on-Write (The Split):
+
+splitChild reads Parent_A (0x2000) and Child_A (0x3000) into memory.
+
+It creates three new nodes in memory:
+
+Parent_B: The parent, now with the middle key from Child_A added.
+
+Left_Child_B: The left half of the original Child_A.
+
+Right_Sibling_Z: A new node with the right half of Child_A.
+
+It calls writeNode() for all three new nodes:
+
+Right_Sibling_Z is written to a new block (e.g., 0x8000).
+
+Left_Child_B is written to a new block (e.g., 0x9000).
+
+Parent_B (with updated child pointers to 0x9000 and 0x8000) is written to a new block (e.g., 0xA000).
+
+3. Free List (Staging):
+
+splitChild has successfully created three new blocks, making the two old ones stale.
+
+It calls file.freeBlock(0x2000) (Old Parent_A).
+
+It calls file.freeBlock(0x3000) (Old Child_A).
+
+Both offsets are added to the in-memory pending_free_list.
+
+splitChild returns the new parent's offset (0xA000) to insertNonFull.
+
+4. Continue Insertion (now just Scenario 1):
+
+insertNonFull (for the original parent) now has the new parent offset 0xA000.
+
+It reads Parent_B (at 0xA000) and decides which of its new children (at 0x9000 or 0x8000) to descend into. Let's say it's Right_Sibling_Z (at 0x8000).
+
+It calls insertNonFull on Right_Sibling_Z. This is now just a Simple Insert (Scenario 1).
+
+This recursive call will:
+
+Modify Right_Sibling_Z (at 0x8000).
+
+Write it to a new block 0xB000.
+
+Call file.freeBlock(0x8000).
+
+This change propagates up, causing Parent_B (at 0xA000) to be rewritten to Parent_C (at 0xC000) and file.freeBlock(0xA000).
+
+5. Commit (The Two Phases):
+
+This chain of CoW rewrites and freeBlock staging operations continues all the way to the root, finally returning a final_root_offset (e.g., 0xF000) to the top-level insert function.
+
+The pending_free_list now contains a long list of all the old, stale blocks: [0x2000, 0x3000, 0x8000, 0xA000, ..., 0x1000].
+
+The insert function calls file.commitRootAndGarbageCollect(0xF000).
+
+Phase 1 (Data): Commits root_offset = 0xF000. The new, split-and-inserted tree is now live.
+
+Phase 2 (Garbage): commitFreeList runs, finds the entire list of staged offsets, and safely recycles all of them.
+
+--------------------------- How Btree Delete works ----------------
+Scenario 1: Simple Leaf Deletion (e.g., deleting key 6 from a leaf)
+Read Path: The removeRecursive function traverses the tree (e.g., Root_A -> Parent_A -> Leaf_A) to find the key. Leaf_A is at offset 0x3000.
+
+Copy-on-Write (CoW):
+
+We read the block for Leaf_A (at 0x3000) into memory.
+
+We remove the key (6) from the in-memory copy.
+
+We call writeNode(), which gets a new block (0x8000) from allocateBlock().
+
+We write our modified leaf (now Leaf_B) to this new block, 0x8000.
+
+Free List (Staging):
+
+removeFromLeaf returns the new offset (0x8000) to its caller (removeRecursive).
+
+The caller sees that the child's offset has changed (from 0x3000 to 0x8000).
+
+It now "frees" the old, stale block by calling file.freeBlock(0x3000).
+
+This only adds 0x3000 to the in-memory pending_free_list.
+
+Propagate Up (CoW):
+
+This change must propagate up. The parent (Parent_A at 0x2000) is now invalid because its child pointer still says 0x3000.
+
+We read Parent_A, update its child pointer to 0x8000, and write this modified parent to a new block, Parent_B (at 0x9000).
+
+The code then calls file.freeBlock(0x2000), adding the old parent to the pending_free_list.
+
+Commit (The Two Phases):
+
+This continues all the way to the root. The top-level remove function gets the final new root offset (e.g., 0xA000).
+
+It calls file.commitRootAndGarbageCollect(0xA000).
+
+Phase 1 (Data): The new root_offset = 0xA000 is written to Block 0 and flushed. The new tree is now live. The old blocks (0x3000, 0x2000, etc.) are now officially "orphaned."
+
+Phase 2 (Garbage): The commitFreeList function runs. It takes the pending_free_list and safely adds all those orphaned blocks to the on-disk free list, committing the new free_list_head to Block 0.
+
+***************Scenario 2: Complex Deletion (Causing a Merge)
+This is the exact same process, just on a larger scale.
+
+Trigger: removeRecursive descends to a Parent_A (at 0x2000) and sees that the child it needs to visit (Child_L at 0x3000) is "under-full" (has t-1 keys).
+
+fill() is called: It decides to merge() Child_L with its sibling Child_R (at 0x4000).
+
+Copy-on-Write (The Merge):
+
+The merge function reads three blocks into memory: Parent_A (at 0x2000), Child_L (at 0x3000), and Child_R (at 0x4000).
+
+It creates two new nodes in memory:
+
+Merged_Child: A big node containing all keys from L, R, and the key from the parent.
+
+Parent_B: The parent node, but with one less key and one less child pointer.
+
+Write New Blocks:
+
+writeNode() is called for Merged_Child, writing it to a new block (e.g., 0xB000).
+
+writeNode() is called for Parent_B, writing it to a new block (e.g., 0xC000).
+
+Free List (Staging):
+
+The merge function now has the new parent offset (0xC000) and can safely free all the old blocks it used.
+
+file.freeBlock(0x2000); (Old Parent)
+
+file.freeBlock(0x3000); (Old Child_L)
+
+file.freeBlock(0x4000); (Old Child_R)
+
+All three offsets are now staged in the pending_free_list.
+
+Propagate and Commit:
+
+The merge function returns the new parent offset (0xC000) to removeRecursive.
+
+This change propagates up to the root, and the final commit is handled by the top-level remove function, just like in Scenario 1. The two-phase commit safely garbage-collects all three old blocks.
+------------------------------------------------------------------------

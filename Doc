@@ -13,8 +13,7 @@ The tables persist on disk in the form of  database (directory) which can have m
 ------Restriction I have placed on by db engine-->
 A. Data type supported by columns [int , string(255 chars max length)]
 B. No parallel clients/process that will interact with dbs
-C. No transaction/crash recovery supported
-D. CRUD(create read update delete) Syntax supported:-
+C. CRUD(create read update delete) Syntax supported:-
     1. SELECT <col names> FROM <table name> INDEX_BY <expr> FILTER_BY <expr>
     2. CREATE_DB <database name>
     3. CREATE_TABLE <table_name> IN <database_name> WITH_COL<(INT,cola) ,(STR ,colb) ,(STR ,colc)>
@@ -24,7 +23,8 @@ D. CRUD(create read update delete) Syntax supported:-
     6. UPDATE_ROW <cola = 55, colb="str1", colc="str2">  WHERE <expr>
 INDEX_BY <expr> can be col_name >50 and col_name <100 where col_name will act as Index.
 Both INDEX_BY and FILTER_BY are optional.
-E. Query can Run 1 table at time ie No joins / order by (sort)
+D. Query can Run 1 table at time ie No joins / order by (sort) 
+#To support sorting use K-way External Merge sort as Cant bring full table in -memory
 
 
 ------ Implementation Caveats ----------->
@@ -196,3 +196,182 @@ PagedFile: A class to manage the file, block allocation, and the free list.
 Node: A class that can serialize/deserialize to/from a 4KB byte buffer.
 
 BTree: The main class, modified to use  PagedFile and to implement the shadow paging logic instead of in-memory pointers.
+
+
+--------------------- How Free List Works -------------------------------
+Need of Free List --> On disk data structure to manage stale blocks leaked by COW
+
+The Two Key Components
+The "Head" Pointer (in Metadata): The only thing we store in our main MetadataHeader (Block 0) is a single offset_t (8 bytes) called free_list_head.
+
+If free_list_head == 0, the list is empty.
+
+If free_list_head != 0, it holds the file offset (e.g., 0x3000) of the first block in the free list.
+
+The "Next" Pointer (inside the free block): When a block is not being used to store B-Tree node data, we re-purpose its first 8 bytes. We use these bytes to store the offset_t of the next free block in the chain.
+
+The rest of the 4088 bytes in that free block are just garbage; we don't care about them.
+
+How the List is Managed
+Here is the step-by-step logic for the two operations that manage the list.
+
+1. Operation: freeBlock(0x2000) (Adding a block to the list)
+Let's say our Copy-on-Write logic just finished and 0x2000 is now a "stale" block that needs to be recycled.
+
+Current State: metadata.free_list_head points to 0x5000.
+
+Metadata (Block 0):
+[ free_list_head: 0x5000 ]
+Step 1: The freeBlock(0x2000) function is called.
+
+Step 2: It reads the current head: old_head = 0x5000.
+
+Step 3: It goes to our newly freed block (0x2000) and writes the old_head value (0x5000) into its first 8 bytes. This "links" our new block to the start of the old list.
+
+File Block at 0x2000:
+[ 0x0000000000005000 | ...garbage... ]
+(This block now "points" to block 0x5000)
+Step 4: It updates the free_list_head (in memory) to point to our new block.
+
+Metadata (In-Memory):
+[ free_list_head: 0x2000 ]
+Result: We've successfully "pushed" the old block onto the front of the free list. The list now looks like: 0x2000 -> 0x5000 -> ...
+
+2. Operation: allocateBlock() (Removing a block from the list)
+Now, a new insert operation needs a fresh block to write to. It calls allocateBlock().
+
+Current State: metadata.free_list_head points to 0x2000.
+
+Metadata (In-Memory):
+[ free_list_head: 0x2000 ]
+
+File Block at 0x2000:
+[ 0x0000000000005000 | ...garbage... ]
+Step 1: The function checks metadata.free_list_head. It's 0x2000 (not empty).
+
+Step 2: This is the block we will reuse. We store this value: block_to_return = 0x2000.
+
+Step 3: This is the key: How do we find the next block? We read the first 8 bytes of the block we are about to return.
+
+It reads 0x2000 and finds the value 0x5000 stored there.
+
+Step 4: It updates the free_list_head (in memory) to this "next" value.
+
+Metadata (In-Memory):
+[ free_list_head: 0x5000 ]
+Step 5: It returns block_to_return (0x2000) to the caller.
+
+Result: The caller (writeNode) gets the offset 0x2000. It then immediately overwrites the entire 4KB block with its B-Tree node data. The old "next" pointer (0x5000) that was stored there is completely erased, which is fine because that block is now "live" and no longer part of the free list.
+
+This whole process is invisible to the B-Tree logic, which just sees allocateBlock() as a "black box" that gives it a valid, empty block to write to.
+
+
+----------------------- Free List with COW ---------------------------
+Because of CoW, every successful insert or update, no matter how small, must propagate all the way to the root.
+
+Here is the chain reaction:
+
+You want to insert (5, 50) into a leaf node (Leaf_A at offset 0x1000).
+
+We read Leaf_A into memory. We see it's not full.
+
+We add (5, 50) to the in-memory copy.
+
+Now, we must write this modified node to a new block. We call writeNode(), which allocates a new block (e.g., 0x5000) and writes the modified leaf data there.
+
+We return 0x5000 to the parent node's recursive call.
+
+The parent node (Parent_A at offset 0x2000) now has a problem. Its child pointer still says 0x1000, but the child's data is now at 0x5000.
+
+The parent must be updated. We read Parent_A, change the child pointer from 0x1000 to 0x5000, and write this modified parent to a new block (0x6000). We also free the old leaf block (0x1000).
+
+This change now propagates to its parent, and so on, all the way to the root.
+
+The root_offset in the metadata header is finally updated to point to the new root, and we free the old parent block (0x2000).
+
+Conclusion: In this specific CoW model, there is no such thing as a "partial write." A change to any block (even just one byte) creates a new block, which changes its offset, which requires its parent to be updated. This ripples all the way to the root.
+
+
+-------------- Bug with the above Free List Implement :-
+During Insert:- As soon as Parent update its child pointer . Add child to freeList
+Now when writing grandparent --> file.allocateBlock() consults freeList and gives the child block
+ie grandparent gets written in child block ---> ie Cant recover if crash
+
+As the 1st 8bytes of the stale block(free list block) is used to contain the next pointer
+of the free list , in case of recover --> data corruct as stale blocks(old datas) 1st 8 byte corrupt
+Hint we can only use 8bytes of old data when we have succesfully upated root to new root
+
+Soln ---->2 phase commit
+trade-off is that a crash might leak blocks, but it will never corrupt the database.
+To solve this, we will introduce a new in-memory-only list.
+
+DbFile Class Change: We will add a std::vector<offset_t> pending_free_list; to the DbFile class. This list is not part of the on-disk header. It's a temporary, in-memory "to-do" list for garbage collection.
+
+2. How the Transaction Works (The CoW)
+This is how an insert or remove will now function:
+
+freeBlock(offset_t offset) is changed:
+
+It is now a trivial, in-memory-only operation.
+
+It does NOT write to the disk.
+
+It does NOT touch the header.free_list_head.
+
+It ONLY does this->pending_free_list.push_back(offset);.
+
+This "stages" the old block for future garbage collection, without affecting the on-disk tree.
+
+allocateBlock() is now safe:
+
+It ONLY gets blocks from the committed header.free_list_head.
+
+Since freeBlock no longer adds to this list during a transaction, allocateBlock can never see or re-allocate a block that was just freed.
+
+This solves the "reuse-after-free" corruption bug completely.
+
+A new commit function commitRootAndGarbageCollect(offset_t new_root_offset) is created: This function will now be the only way to commit, and it works in two distinct phases.
+
+3. The New Commit: Phase 1 (Data Commit)
+This phase's only job is to make the new data "live."
+
+commitRootAndGarbageCollect is called with the new_root_offset.
+
+It updates the in-memory metadata: this->header.root_offset = new_root_offset;.
+
+It does NOT touch the header.free_list_head yet.
+
+It writes the entire header (with the new root and the old free list head) to Block 0 and calls file.flush().
+
+Crash Analysis (Phase 1):
+
+If we crash before this flush: On restart, we read Block 0. We get the old root_offset and the old free_list_head. The database is in its original, perfect state. The new blocks are garbage on disk, and the pending_free_list (which was in memory) is gone. No corruption.
+
+If we crash after this flush: On restart, we read Block 0. We get the new root_offset and the old free_list_head. The new tree is live and 100% valid. The blocks in the (now-lost) pending_free_list are now "leaked" (orphaned). This is a block leak, but it is NOT corruption. The database is perfectly safe and correct.
+
+4. The New Commit: Phase 2 (Garbage Collection)
+Only after Phase 1 is successful, the function proceeds to Phase 2.
+
+The pending_free_list (still in memory) contains all the blocks that are now safely leaked.
+
+We will now add them to the real free list.
+
+The function iterates through every offset in pending_free_list:
+
+It reads the current header.free_list_head value.
+
+It safely writes this value ("next" pointer) into the first 8 bytes of the block at offset.
+
+It updates the in-memory header.free_list_head = offset;.
+
+After this loop finishes, the header.free_list_head in memory now points to the start of a complete, valid chain of newly-freed blocks.
+
+The function performs a second commit: It calls writeHeader() and file.flush() again, this time committing the new free_list_head to disk.
+
+Finally, it clears the in-memory pending_free_list.
+
+Crash Analysis (Phase 2):
+
+If we crash during this process: On restart, we read Block 0. We get the new root_offset (from Phase 1, which succeeded) and the old free_list_head (because the second commit never finished). The blocks we were trying to free are simply... still leaked. Again, no corruption. The database is 100% safe.
+
+---------------------------------------------------------------

@@ -69,6 +69,7 @@ private:
 
     // Convert keys to/from the internal string format
     std::string keyToString(int32_t key);
+    std::string keyToString(const std::string& key);
 
     // Recursive search helper
     std::optional<int32_t> searchRecursive(offset_t node_offset, const std::string& k);
@@ -96,12 +97,13 @@ private:
     offset_t splitChild(std::shared_ptr<Node> parent_node, offset_t parent_offset, int i);
 
     // Recursive remove logic
-    offset_t removeFromLeaf(std::shared_ptr<Node> node, int idx);
+    offset_t removeFromLeaf(std::shared_ptr<Node> node, offset_t node_offset, int idx);
     offset_t removeFromNonLeaf(std::shared_ptr<Node> node, offset_t node_offset, int idx);
     std::shared_ptr<Node> getPred(offset_t node_offset, int idx);
     std::shared_ptr<Node> getSucc(offset_t node_offset, int idx);
 
     // Fill/Merge logic for remove
+    // All these functions free the old node(s) and return the new parent offset
     offset_t fill(std::shared_ptr<Node> node, offset_t node_offset, int idx);
     offset_t borrowFromPrev(std::shared_ptr<Node> node, offset_t node_offset, int idx);
     offset_t borrowFromNext(std::shared_ptr<Node> node, offset_t node_offset, int idx);
@@ -115,8 +117,4 @@ private:
 
     DbFile file;
     MetadataHeader metadata;
-
-    // When an operation modifies the tree, it returns the
-    // offset of the new root. This variable tracks it.
-    offset_t new_root_offset_cache;
 };

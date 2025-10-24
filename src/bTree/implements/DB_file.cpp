@@ -35,6 +35,14 @@ bool DbFile::create(const std::string& filename, KeyType key_type, uint32_t& t_o
     header = MetadataHeader(); // Reset to defaults
     header.key_type = key_type;
     header.t = calculateT(key_type);
+
+    if (header.t == 0) {
+        std::cerr << "Error: BLOCK_SIZE " << BLOCK_SIZE
+                  << " is too small for this key type." << std::endl;
+        file.close();
+        return false;
+    }
+
     t_out = header.t;
 
     // Write the empty metadata block to disk
@@ -204,6 +212,13 @@ uint32_t DbFile::calculateT(KeyType key_type) {
     }
 
     int max_keys = (available_space - 8) / (key_size + 12);
+
+    // We must be able to store at least 3 keys for a t=2 tree.
+    // If max_keys is less than 3, this block size is invalid.
+    if (max_keys < 3) {
+        // Return 0 to signal failure
+        return 0;
+    }
 
     // max_keys must be odd (2t-1), so find largest odd num <= max_keys
     if (max_keys % 2 == 0) {

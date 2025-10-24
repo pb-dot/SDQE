@@ -5,7 +5,7 @@
 
 // --- BTree Public API ---
 
-BTree::BTree() : new_root_offset_cache(0) {}
+BTree::BTree() {}
 
 BTree::~BTree() {
     close();
@@ -32,73 +32,92 @@ void BTree::close() {
     file.close();
 }
 
+// --- FIX: Refactored insert(int) ---
 void BTree::insert(int32_t key, int32_t value) {
-    insert(keyToString(key), value);
-}
-
-void BTree::insert(const std::string& key, int32_t value) {
     if (!file.isOpen()) throw std::runtime_error("BTree file not open.");
 
-    std::string k = key;
-    if (key.length() >= MAX_STRING_KEY_SIZE) {
-        // Truncate key if too long
-        k=key.substr(0, MAX_STRING_KEY_SIZE - 1);
-    }
+    // 1. Get the internal-format key, throws on type mismatch
+    std::string k = keyToString(key);
+    offset_t old_root_offset = metadata.root_offset;
 
-     // If root is 0, tree is empty.
-    if (metadata.root_offset == 0) {
+    // 2. Handle empty tree
+    if (old_root_offset == 0) {
         auto root = std::make_shared<Node>(metadata.t, metadata.key_type, true);
         root->keys[0] = k;
         root->values[0] = value;
         root->n = 1;
 
-        // Write new root and commit
         offset_t new_root_offset = writeNode(root);
         file.commitRootOffset(new_root_offset);
-        metadata.root_offset = new_root_offset; // Update in-memory copy
+        metadata.root_offset = new_root_offset;
     } else {
-        // Start recursive insert from root
-        new_root_offset_cache = metadata.root_offset;
-        offset_t final_root_offset = insertRecursive(metadata.root_offset, k, value);
+        // 3. Call recursive insert
+        offset_t final_root_offset = insertRecursive(old_root_offset, k, value);
 
-        // If root changed, commit the new root offset
-        if (final_root_offset != metadata.root_offset) {
+        if (final_root_offset != old_root_offset) {
+            file.freeBlock(old_root_offset);
             file.commitRootOffset(final_root_offset);
             metadata.root_offset = final_root_offset;
         }
     }
 }
 
-std::optional<int32_t> BTree::search(int32_t key) {
-    return search(keyToString(key));
+// --- FIX: Refactored insert(string) ---
+void BTree::insert(const std::string& key, int32_t value) {
+    if (!file.isOpen()) throw std::runtime_error("BTree file not open.");
+
+    // 1. Get the internal-format key, throws on type mismatch
+    std::string k = keyToString(key);
+    offset_t old_root_offset = metadata.root_offset;
+
+    // 2. Handle empty tree
+    if (old_root_offset == 0) {
+        auto root = std::make_shared<Node>(metadata.t, metadata.key_type, true);
+        root->keys[0] = k;
+        root->values[0] = value;
+        root->n = 1;
+
+        offset_t new_root_offset = writeNode(root);
+        file.commitRootOffset(new_root_offset);
+        metadata.root_offset = new_root_offset;
+    } else {
+        // 3. Call recursive insert
+        offset_t final_root_offset = insertRecursive(old_root_offset, k, value);
+
+        if (final_root_offset != old_root_offset) {
+            file.freeBlock(old_root_offset);
+            file.commitRootOffset(final_root_offset);
+            metadata.root_offset = final_root_offset;
+        }
+    }
 }
 
+// --- FIX: Simplified search(int) ---
+std::optional<int32_t> BTree::search(int32_t key) {
+    if (!file.isOpen()) throw std::runtime_error("BTree file not open.");
+    // keyToString(key) handles type check
+    return searchRecursive(metadata.root_offset, keyToString(key));
+}
+
+// --- FIX: Simplified search(string) ---
 std::optional<int32_t> BTree::search(const std::string& key) {
     if (!file.isOpen()) throw std::runtime_error("BTree file not open.");
-    return searchRecursive(metadata.root_offset, key);
+    // keyToString(key) handles type check
+    return searchRecursive(metadata.root_offset, keyToString(key));
 }
 
+// --- FIX: Refactored update(int) ---
 bool BTree::update(int32_t key, int32_t new_value) {
-    return update(keyToString(key), new_value);
-}
-
-bool BTree::update(const std::string& key, int32_t new_value) {
     if (!file.isOpen()) throw std::runtime_error("BTree file not open.");
 
-    std::string k = key;
-    if (key.length() >= MAX_STRING_KEY_SIZE) {
-        // Truncate key if too long
-        k=key.substr(0, MAX_STRING_KEY_SIZE - 1);
-    }
-
+    std::string k = keyToString(key); // Handles type check
     bool updated = false;
+    offset_t old_root_offset = metadata.root_offset;
 
-    // Start recursive update from root
-    new_root_offset_cache = metadata.root_offset;
-    offset_t final_root_offset = updateRecursive(metadata.root_offset, k, new_value, updated);
+    offset_t final_root_offset = updateRecursive(old_root_offset, k, new_value, updated);
 
-    // If root changed (e.g. from a deletion/merge), commit
-    if (final_root_offset != metadata.root_offset) {
+    if (final_root_offset != old_root_offset) {
+        file.freeBlock(old_root_offset);
         file.commitRootOffset(final_root_offset);
         metadata.root_offset = final_root_offset;
     }
@@ -106,73 +125,123 @@ bool BTree::update(const std::string& key, int32_t new_value) {
     return updated;
 }
 
-void BTree::remove(int32_t key) {
-    remove(keyToString(key));
-}
+// --- FIX: Refactored update(string) ---
+bool BTree::update(const std::string& key, int32_t new_value) {
+    if (!file.isOpen()) throw std::runtime_error("BTree file not open.");
 
-void BTree::remove(const std::string& key) {
-    if (!file.isOpen() || metadata.root_offset == 0) return;
+    std::string k = keyToString(key); // Handles type check
+    bool updated = false;
+    offset_t old_root_offset = metadata.root_offset;
 
-    std::string k = key;
-    if (key.length() >= MAX_STRING_KEY_SIZE) {
-        // Truncate key if too long
-        k=key.substr(0, MAX_STRING_KEY_SIZE - 1);
-    }
-    new_root_offset_cache = metadata.root_offset;
-    offset_t final_root_offset = removeRecursive(metadata.root_offset, k);
+    offset_t final_root_offset = updateRecursive(old_root_offset, k, new_value, updated);
 
-    // If root changed, commit
-    if (final_root_offset != metadata.root_offset) {
+    if (final_root_offset != old_root_offset) {
+        file.freeBlock(old_root_offset);
         file.commitRootOffset(final_root_offset);
         metadata.root_offset = final_root_offset;
+    }
 
-        // If root became empty, check if it needs to be collapsed
+    return updated;
+}
+
+// --- FIX: Refactored remove(int) ---
+void BTree::remove(int32_t key) {
+    if (!file.isOpen() || metadata.root_offset == 0) return;
+
+    std::string k = keyToString(key); // Handles type check
+    offset_t old_root_offset = metadata.root_offset;
+    offset_t final_root_offset = removeRecursive(old_root_offset, k);
+
+    if (final_root_offset != old_root_offset) {
+        file.freeBlock(old_root_offset);
+
         if (final_root_offset != 0) {
             auto root = readNode(final_root_offset);
             if (root->n == 0 && !root->is_leaf) {
-                // Root is empty and not a leaf, new root is its only child
                 offset_t new_root = root->children[0];
-                file.freeBlock(final_root_offset); // Free old root block
+                file.freeBlock(final_root_offset);
                 file.commitRootOffset(new_root);
                 metadata.root_offset = new_root;
             } else if (root->n == 0 && root->is_leaf) {
-                // Tree is now completely empty
                 file.freeBlock(final_root_offset);
                 file.commitRootOffset(0);
                 metadata.root_offset = 0;
+            } else {
+                file.commitRootOffset(final_root_offset);
+                metadata.root_offset = final_root_offset;
             }
+        } else {
+            file.commitRootOffset(0);
+            metadata.root_offset = 0;
         }
     }
 }
 
+// --- FIX: Refactored remove(string) ---
+void BTree::remove(const std::string& key) {
+    if (!file.isOpen() || metadata.root_offset == 0) return;
 
-std::vector<BTree::KeyValuePair> BTree::rangeSearch(int32_t min_k, int32_t max_k) {
-    return rangeSearch(keyToString(min_k), keyToString(max_k));
+    std::string k = keyToString(key); // Handles type check
+    offset_t old_root_offset = metadata.root_offset;
+    offset_t final_root_offset = removeRecursive(old_root_offset, k);
+
+    if (final_root_offset != old_root_offset) {
+        file.freeBlock(old_root_offset);
+
+        if (final_root_offset != 0) {
+            auto root = readNode(final_root_offset);
+            if (root->n == 0 && !root->is_leaf) {
+                offset_t new_root = root->children[0];
+                file.freeBlock(final_root_offset);
+                file.commitRootOffset(new_root);
+                metadata.root_offset = new_root;
+            } else if (root->n == 0 && root->is_leaf) {
+                file.freeBlock(final_root_offset);
+                file.commitRootOffset(0);
+                metadata.root_offset = 0;
+            } else {
+                file.commitRootOffset(final_root_offset);
+                metadata.root_offset = final_root_offset;
+            }
+        } else {
+            file.commitRootOffset(0);
+            metadata.root_offset = 0;
+        }
+    }
 }
 
-std::vector<BTree::KeyValuePair> BTree::rangeSearch(const std::string& min_k, const std::string& max_k) {
+// --- FIX: Refactored rangeSearch(int) ---
+std::vector<BTree::KeyValuePair> BTree::rangeSearch(int32_t min_k, int32_t max_k) {
     std::vector<KeyValuePair> results;
     if (!file.isOpen() || metadata.root_offset == 0) return results;
 
-    std::string min_str = min_k;
-    if (min_k.length() >= MAX_STRING_KEY_SIZE) {
-        // Truncate key if too long
-        min_str=min_k.substr(0, MAX_STRING_KEY_SIZE - 1);
-    }
-    std::string max_str = max_k;
-    if (max_k.length() >= MAX_STRING_KEY_SIZE) {
-        // Truncate key if too long
-        max_str=max_k.substr(0, MAX_STRING_KEY_SIZE - 1);
-    }
+    // keyToString handles type checking
+    std::string min_str = keyToString(min_k);
+    std::string max_str = keyToString(max_k);
 
     rangeSearchRecursive(metadata.root_offset, min_str, max_str, results);
 
-    // De-format keys if they are integers
+    // De-format keys
     if (metadata.key_type == KeyType::INTEGER) {
         for (auto& pair : results) {
             pair.first = std::to_string(Node::stringKeyToInt(pair.first));
         }
     }
+    return results;
+}
+
+// --- FIX: Refactored rangeSearch(string) ---
+std::vector<BTree::KeyValuePair> BTree::rangeSearch(const std::string& min_k, const std::string& max_k) {
+    std::vector<KeyValuePair> results;
+    if (!file.isOpen() || metadata.root_offset == 0) return results;
+
+    // keyToString handles type checking and truncation
+    std::string min_str = keyToString(min_k);
+    std::string max_str = keyToString(max_k);
+
+    rangeSearchRecursive(metadata.root_offset, min_str, max_str, results);
+
+    // No de-formatting needed for string keys
     return results;
 }
 
@@ -216,17 +285,26 @@ offset_t BTree::writeNode(std::shared_ptr<Node> node) {
 
 // --- BTree Private: Key Helpers ---
 
+// --- FIX: Corrected and strict keyToString(int) ---
 std::string BTree::keyToString(int32_t key) {
     if (metadata.key_type != KeyType::INTEGER) {
-        throw std::runtime_error("Key type mismatch: expected int, got string");
+        throw std::runtime_error("Key type mismatch: This is a STRING tree, but an INT key was provided.");
     }
-    std::string k = Node::intKeyToString(key);
-    if (k.length() >= MAX_STRING_KEY_SIZE) {
-        // Truncate key if too long
-        return k.substr(0, MAX_STRING_KEY_SIZE - 1);
-    }
-    return k;
+    return Node::intKeyToString(key);
 }
+
+// --- FIX: Corrected and strict keyToString(string) ---
+std::string BTree::keyToString(const std::string& key) {
+    if (metadata.key_type != KeyType::STRING) {
+        throw std::runtime_error("Key type mismatch: This is an INT tree, but a STRING key was provided.");
+    }
+    if (key.length() >= MAX_STRING_KEY_SIZE) {
+        // Truncate key if too long
+        return key.substr(0, MAX_STRING_KEY_SIZE - 1);
+    }
+    return key;
+}
+
 // --- BTree Private: Search ---
 
 std::optional<int32_t> BTree::searchRecursive(offset_t node_offset, const std::string& k) {
@@ -265,12 +343,9 @@ offset_t BTree::updateRecursive(offset_t node_offset, const std::string& k, int3
     if (i < node->n && node->keys[i] == k) {
         node->values[i] = new_value;
         updated = true;
-        // Write the modified node to a new block
+
         offset_t new_node_offset = writeNode(node);
-        // The old block `node_offset` is now stale, but we don't free it yet.
-        // It's part of a valid tree version until the root is committed.
-        // For simplicity, we'll leak it.
-        // To fix this, we'd need a garbage collector.
+        file.freeBlock(node_offset);
         return new_node_offset;
     }
 
@@ -288,12 +363,12 @@ offset_t BTree::updateRecursive(offset_t node_offset, const std::string& k, int3
         return node_offset;
     }
 
-    // --- Copy-on-Write ---
-    // The child *was* changed (at `new_child_offset`).
-    // We must create a new version of *this* node pointing to it.
+    // Copy-on-Write: Child changed.
+    file.freeBlock(old_child_offset); // Free the old child block
     node->children[i] = new_child_offset;
+
     offset_t new_parent_offset = writeNode(node);
-    // Again, `node_offset` is now stale.
+    file.freeBlock(node_offset); // Free the old parent block
 
     return new_parent_offset;
 }
@@ -309,24 +384,34 @@ offset_t BTree::insertRecursive(offset_t node_offset, const std::string& k, int3
         auto s = std::make_shared<Node>(metadata.t, metadata.key_type, false);
         s->children[0] = node_offset; // Old root is now child 0
 
-        // `new_root_offset_cache` will be written by `splitChild`
-        offset_t new_root_offset = splitChild(s, 0, 0); // node `s` is not on disk yet (offset=0)
+        // `splitChild` frees `node_offset` (y_offset)
+        // It does *not* free `parent_offset` (0)
+        // It returns the offset of the *new* root (`s`).
+        offset_t new_root_offset = splitChild(s, 0, 0);
 
-        // `s` is now the new root, decide which child to insert into
+        // Read the new root back
+        auto new_root_node = readNode(new_root_offset);
+
+        // Decide which child to insert into
         int i = 0;
-        if (s->keys[0] < k) {
+        if (new_root_node->keys[0] < k) {
             i++;
         }
-        offset_t child_offset = s->children[i];
+
+        offset_t child_offset = new_root_node->children[i];
         auto child_node = readNode(child_offset);
 
         // Recurse into the correct child
         offset_t new_child_offset = insertNonFull(child_node, child_offset, k, v);
 
         if (new_child_offset != child_offset) {
-            s->children[i] = new_child_offset;
-            // Write the modified root `s` again
-            new_root_offset = writeNode(s);
+            file.freeBlock(child_offset);
+            new_root_node->children[i] = new_child_offset;
+
+            // Write the modified root `s` again and free the old version
+            offset_t final_root_offset = writeNode(new_root_node);
+            file.freeBlock(new_root_offset);
+            return final_root_offset;
         }
 
         return new_root_offset; // Return the new root's offset
@@ -342,21 +427,19 @@ offset_t BTree::insertNonFull(std::shared_ptr<Node> node, offset_t node_offset, 
 
     if (node->is_leaf) {
         // --- Leaf Node: Insert key here ---
-
-        // Find location for new key
         while (i >= 0 && node->keys[i] > k) {
             node->keys[i + 1] = node->keys[i];
             node->values[i + 1] = node->values[i];
             i--;
         }
 
-        // Insert new key and value
         node->keys[i + 1] = k;
         node->values[i + 1] = v;
         node->n = node->n + 1;
 
-        // Write this modified leaf to a new block
-        return writeNode(node);
+        offset_t new_leaf_offset = writeNode(node);
+        file.freeBlock(node_offset);
+        return new_leaf_offset;
     }
 
     // --- Internal Node: Find child to insert into ---
@@ -371,7 +454,8 @@ offset_t BTree::insertNonFull(std::shared_ptr<Node> node, offset_t node_offset, 
     // Check if child is full
     if (child_node->n == 2 * metadata.t - 1) {
         // Child is full: split it
-        // This writes 3 new nodes and returns the new parent offset
+        // `splitChild` frees `node_offset` and `child_offset`.
+        // It returns the offset of the *new* parent node.
         offset_t new_parent_offset = splitChild(node, node_offset, i);
 
         // Read the new parent back (its keys/children changed)
@@ -383,12 +467,18 @@ offset_t BTree::insertNonFull(std::shared_ptr<Node> node, offset_t node_offset, 
         }
 
         // Recurse into the correct (and now not full) child
-        offset_t new_child_offset = insertNonFull(readNode(new_parent_node->children[i]), new_parent_node->children[i], k, v);
+        offset_t child_to_descend_offset = new_parent_node->children[i];
+        auto child_to_descend_node = readNode(child_to_descend_offset);
+        offset_t new_child_offset = insertNonFull(child_to_descend_node, child_to_descend_offset, k, v);
 
-        // If child write caused *another* copy, update parent again
-        if (new_child_offset != new_parent_node->children[i]) {
+        if (new_child_offset != child_to_descend_offset) {
+            file.freeBlock(child_to_descend_offset);
             new_parent_node->children[i] = new_child_offset;
-            return writeNode(new_parent_node);
+
+            // Write parent again and free previous parent version
+            offset_t final_parent_offset = writeNode(new_parent_node);
+            file.freeBlock(new_parent_offset);
+            return final_parent_offset;
         }
 
         return new_parent_offset;
@@ -397,10 +487,13 @@ offset_t BTree::insertNonFull(std::shared_ptr<Node> node, offset_t node_offset, 
     // Child is not full: recurse
     offset_t new_child_offset = insertNonFull(child_node, child_offset, k, v);
 
-    // If recursion caused a copy-on-write, we must update this node
     if (new_child_offset != child_offset) {
+        file.freeBlock(child_offset);
         node->children[i] = new_child_offset;
-        return writeNode(node);
+
+        offset_t new_parent_offset = writeNode(node);
+        file.freeBlock(node_offset);
+        return new_parent_offset;
     }
 
     // No changes, return original offset
@@ -408,20 +501,12 @@ offset_t BTree::insertNonFull(std::shared_ptr<Node> node, offset_t node_offset, 
 }
 
 offset_t BTree::splitChild(std::shared_ptr<Node> parent_node, offset_t parent_offset, int i) {
-    // `parent_node` is the node *in memory*.
-    // `i` is the index of the child *to be split*.
-
     offset_t y_offset = parent_node->children[i];
     auto y = readNode(y_offset); // `y` is the full child node
 
-    // `z` is the new sibling node
     auto z = std::make_shared<Node>(metadata.t, metadata.key_type, y->is_leaf);
 
-    // Use Node's helper to move keys/values
     parent_node->splitChild(i, y, z);
-
-    // --- Now, write all 3 modified nodes to disk ---
-    // This is the core Copy-on-Write for a split
 
     // 1. Write new sibling `z`
     offset_t z_offset = writeNode(z);
@@ -446,9 +531,6 @@ offset_t BTree::splitChild(std::shared_ptr<Node> parent_node, offset_t parent_of
 
 
 // --- BTree Private: Remove (Copy-on-Write) ---
-// Note: This is a simplified remove implementation.
-// It correctly handles leaf and basic internal node removal.
-// The merge/borrow logic for Copy-on-Write is complex.
 
 offset_t BTree::removeRecursive(offset_t node_offset, const std::string& k) {
     if (node_offset == 0) return 0;
@@ -459,7 +541,7 @@ offset_t BTree::removeRecursive(offset_t node_offset, const std::string& k) {
     // --- Case 1: Key is in this node ---
     if (idx < node->n && node->keys[idx] == k) {
         if (node->is_leaf) {
-            return removeFromLeaf(node, idx); // Case 1
+            return removeFromLeaf(node, node_offset, idx); // Case 1
         } else {
             return removeFromNonLeaf(node, node_offset, idx); // Case 2
         }
@@ -478,20 +560,38 @@ offset_t BTree::removeRecursive(offset_t node_offset, const std::string& k) {
     // --- Case 3: Ensure child has at least 't' keys ---
     if (child_node->n < metadata.t) {
         // Child is under-full. Fill it before descending.
-        // `fill` returns the *new* offset of the parent node.
+        // `fill` frees `node_offset` and returns the *new* parent offset.
         offset_t new_parent_offset = fill(node, node_offset, idx);
 
         // Read the new parent back
         auto new_parent_node = readNode(new_parent_offset);
+        offset_t new_child_to_descend_offset;
 
         // After fill, child[idx] might have merged with child[idx-1].
-        // If we were descending to the last child and it merged,
-        // we must now descend to the *new* last child (idx-1).
         if (is_last_child && idx > new_parent_node->n) {
-            return removeRecursive(new_parent_node->children[idx - 1], k);
+            new_child_to_descend_offset = new_parent_node->children[idx - 1];
         } else {
-            return removeRecursive(new_parent_node->children[idx], k);
+            new_child_to_descend_offset = new_parent_node->children[idx];
         }
+
+        // Recurse on the appropriate child
+        offset_t final_child_offset = removeRecursive(new_child_to_descend_offset, k);
+
+        // If recursion modified child, update parent
+        if (final_child_offset != new_child_to_descend_offset) {
+            file.freeBlock(new_child_to_descend_offset);
+            if (is_last_child && idx > new_parent_node->n) {
+                new_parent_node->children[idx - 1] = final_child_offset;
+            } else {
+                new_parent_node->children[idx] = final_child_offset;
+            }
+
+            offset_t final_parent_offset = writeNode(new_parent_node);
+            file.freeBlock(new_parent_offset);
+            return final_parent_offset;
+        }
+
+        return new_parent_offset;
     }
 
     // Child is fine, recurse
@@ -499,14 +599,18 @@ offset_t BTree::removeRecursive(offset_t node_offset, const std::string& k) {
 
     // Copy-on-Write: If child changed, update this node
     if (new_child_offset != child_offset) {
+        file.freeBlock(child_offset);
         node->children[idx] = new_child_offset;
-        return writeNode(node);
+
+        offset_t new_parent_offset = writeNode(node);
+        file.freeBlock(node_offset);
+        return new_parent_offset;
     }
 
     return node_offset;
 }
 
-offset_t BTree::removeFromLeaf(std::shared_ptr<Node> node, int idx) {
+offset_t BTree::removeFromLeaf(std::shared_ptr<Node> node, offset_t node_offset, int idx) {
     // Shift keys/values left
     for (int i = idx + 1; i < node->n; ++i) {
         node->keys[i - 1] = node->keys[i];
@@ -514,47 +618,76 @@ offset_t BTree::removeFromLeaf(std::shared_ptr<Node> node, int idx) {
     }
     node->n--;
 
-    // Write the modified node
-    return writeNode(node);
+    offset_t new_node_offset = writeNode(node);
+    file.freeBlock(node_offset);
+    return new_node_offset;
 }
 
 offset_t BTree::removeFromNonLeaf(std::shared_ptr<Node> node, offset_t node_offset, int idx) {
     std::string k = node->keys[idx];
+    offset_t pred_child_offset = node->children[idx];
+    offset_t succ_child_offset = node->children[idx + 1];
 
-    auto pred_child = readNode(node->children[idx]);
-    auto succ_child = readNode(node->children[idx + 1]);
+    auto pred_child = readNode(pred_child_offset);
 
     // Case 2a: Predecessor child has >= t keys
     if (pred_child->n >= metadata.t) {
-        auto pred_node = getPred(node->children[idx], idx); // Find rightmost key in subtree
+        auto pred_node = getPred(pred_child_offset, idx); // Find rightmost key in subtree
         node->keys[idx] = pred_node->keys[pred_node->n - 1];
         node->values[idx] = pred_node->values[pred_node->n - 1];
 
         // Recurse to delete the predecessor key
-        offset_t new_child_offset = removeRecursive(node->children[idx], pred_node->keys[pred_node->n - 1]);
+        offset_t new_child_offset = removeRecursive(pred_child_offset, pred_node->keys[pred_node->n - 1]);
+
+        file.freeBlock(pred_child_offset);
         node->children[idx] = new_child_offset;
-        return writeNode(node);
+
+        offset_t new_parent_offset = writeNode(node);
+        file.freeBlock(node_offset);
+        return new_parent_offset;
     }
+
+    auto succ_child = readNode(succ_child_offset);
 
     // Case 2b: Successor child has >= t keys
     if (succ_child->n >= metadata.t) {
-        auto succ_node = getSucc(node->children[idx + 1], idx); // Find leftmost key in subtree
+        auto succ_node = getSucc(succ_child_offset, idx); // Find leftmost key in subtree
         node->keys[idx] = succ_node->keys[0];
         node->values[idx] = succ_node->values[0];
 
         // Recurse to delete the successor key
-        offset_t new_child_offset = removeRecursive(node->children[idx + 1], succ_node->keys[0]);
+        offset_t new_child_offset = removeRecursive(succ_child_offset, succ_node->keys[0]);
+
+        file.freeBlock(succ_child_offset);
         node->children[idx + 1] = new_child_offset;
-        return writeNode(node);
+
+        offset_t new_parent_offset = writeNode(node);
+        file.freeBlock(node_offset);
+        return new_parent_offset;
     }
 
     // Case 2c: Both children have t-1 keys. Merge them.
-    // This will return the new offset of the *parent* node.
+    // `merge` frees `node_offset`, `pred_child_offset`, and `succ_child_offset`.
+    // It returns the new offset of the *parent* node.
     offset_t new_parent_offset = merge(node, node_offset, idx);
-    // After merge, the key `k` is now in the merged child.
+
+    // After merge, the key `k` is now in the merged child (at child[idx]).
     // Recurse into that child to delete `k`.
     auto new_parent = readNode(new_parent_offset);
-    return removeRecursive(new_parent->children[idx], k);
+    offset_t merged_child_offset = new_parent->children[idx];
+
+    offset_t final_child_offset = removeRecursive(merged_child_offset, k);
+
+    if (final_child_offset != merged_child_offset) {
+        file.freeBlock(merged_child_offset);
+        new_parent->children[idx] = final_child_offset;
+
+        offset_t final_parent_offset = writeNode(new_parent);
+        file.freeBlock(new_parent_offset);
+        return final_parent_offset;
+    }
+
+    return new_parent_offset;
 }
 
 // Gets predecessor node (rightmost node in subtree)
@@ -596,8 +729,11 @@ offset_t BTree::fill(std::shared_ptr<Node> node, offset_t node_offset, int idx) 
 }
 
 offset_t BTree::borrowFromPrev(std::shared_ptr<Node> node, offset_t node_offset, int idx) {
-    auto child = readNode(node->children[idx]);
-    auto sibling = readNode(node->children[idx - 1]);
+    offset_t child_offset = node->children[idx];
+    offset_t sibling_offset = node->children[idx - 1];
+
+    auto child = readNode(child_offset);
+    auto sibling = readNode(sibling_offset);
 
     // Move all keys in child one step ahead
     for (int i = child->n - 1; i >= 0; --i) {
@@ -632,15 +768,21 @@ offset_t BTree::borrowFromPrev(std::shared_ptr<Node> node, offset_t node_offset,
     node->children[idx] = new_child_offset;
     node->children[idx - 1] = new_sibling_offset;
 
-    file.freeBlock(node->children[idx]);
-    file.freeBlock(node->children[idx-1]);
+    offset_t new_parent_offset = writeNode(node);
 
-    return writeNode(node);
+    file.freeBlock(child_offset);
+    file.freeBlock(sibling_offset);
+    file.freeBlock(node_offset);
+
+    return new_parent_offset;
 }
 
 offset_t BTree::borrowFromNext(std::shared_ptr<Node> node, offset_t node_offset, int idx) {
-    auto child = readNode(node->children[idx]);
-    auto sibling = readNode(node->children[idx + 1]);
+    offset_t child_offset = node->children[idx];
+    offset_t sibling_offset = node->children[idx + 1];
+
+    auto child = readNode(child_offset);
+    auto sibling = readNode(sibling_offset);
 
     // Parent key/value moves to end of child
     child->keys[child->n] = node->keys[idx];
@@ -674,15 +816,21 @@ offset_t BTree::borrowFromNext(std::shared_ptr<Node> node, offset_t node_offset,
     node->children[idx] = new_child_offset;
     node->children[idx + 1] = new_sibling_offset;
 
-    file.freeBlock(node->children[idx]);
-    file.freeBlock(node->children[idx + 1]);
+    offset_t new_parent_offset = writeNode(node);
 
-    return writeNode(node);
+    file.freeBlock(child_offset);
+    file.freeBlock(sibling_offset);
+    file.freeBlock(node_offset);
+
+    return new_parent_offset;
 }
 
 offset_t BTree::merge(std::shared_ptr<Node> node, offset_t node_offset, int idx) {
-    auto child = readNode(node->children[idx]);
-    auto sibling = readNode(node->children[idx + 1]);
+    offset_t child_offset = node->children[idx];
+    offset_t sibling_offset = node->children[idx + 1];
+
+    auto child = readNode(child_offset);
+    auto sibling = readNode(sibling_offset);
 
     // Pull down key from parent
     child->keys[metadata.t - 1] = node->keys[idx];
@@ -715,10 +863,13 @@ offset_t BTree::merge(std::shared_ptr<Node> node, offset_t node_offset, int idx)
     offset_t new_child_offset = writeNode(child);
     node->children[idx] = new_child_offset;
 
-    file.freeBlock(node->children[idx]); // Free old child
-    file.freeBlock(node->children[idx+1]); // Free old sibling
+    offset_t new_parent_offset = writeNode(node);
 
-    return writeNode(node);
+    file.freeBlock(child_offset);
+    file.freeBlock(sibling_offset);
+    file.freeBlock(node_offset);
+
+    return new_parent_offset;
 }
 
 
@@ -730,23 +881,31 @@ void BTree::rangeSearchRecursive(offset_t node_offset, const std::string& min_k,
     auto node = readNode(node_offset);
     int i = 0;
     for (i = 0; i < node->n; i++) {
-        // 1. If not leaf, traverse subtree before key[i]
-        if (!node->is_leaf) {
+        // 1. If key[i] is already > max_k, and we haven't descended,
+        //    we might need to check the leftmost child.
+        if (node->keys[i] > max_k && !node->is_leaf) {
+             rangeSearchRecursive(node->children[i], min_k, max_k, results);
+             return; // No other keys in this node or to its right can match
+        }
+
+        // 2. If not leaf, traverse subtree *before* key[i]
+        //    (Only if min_k is less than or equal to this key)
+        if (!node->is_leaf && node->keys[i] >= min_k) {
             rangeSearchRecursive(node->children[i], min_k, max_k, results);
         }
 
-        // 2. Check if key[i] is in range
+        // 3. Check if key[i] is in range
         if (node->keys[i] >= min_k && node->keys[i] <= max_k) {
             results.push_back({node->keys[i], node->values[i]});
         }
 
-        // 3. If key[i] > max_k, we can stop
+        // 4. If key[i] > max_k, we can stop iterating keys in this node
         if (node->keys[i] > max_k) {
             return;
         }
     }
 
-    // 4. Traverse the last child (subtree after key[n-1])
+    // 5. Traverse the last child (subtree after key[n-1])
     if (!node->is_leaf) {
         rangeSearchRecursive(node->children[i], min_k, max_k, results);
     }
@@ -755,7 +914,15 @@ void BTree::rangeSearchRecursive(offset_t node_offset, const std::string& min_k,
 void BTree::printRecursive(offset_t node_offset, int level) {
     if (node_offset == 0) return;
 
-    auto node = readNode(node_offset);
+    std::shared_ptr<Node> node;
+    try {
+        node = readNode(node_offset);
+    } catch (const std::exception& e) {
+        std::cout << std::string(level * 4, ' ') << "[Node " << node_offset
+                  << "] (ERROR: " << e.what() << ")" << std::endl;
+        return;
+    }
+
     std::string indent(level * 4, ' ');
 
     std::cout << indent << "[Node " << node_offset << "] (n=" << node->n << ") "
@@ -769,7 +936,12 @@ void BTree::printRecursive(offset_t node_offset, int level) {
 
         std::cout << indent << "  - Key: ";
         if (metadata.key_type == KeyType::INTEGER) {
-            std::cout << Node::stringKeyToInt(node->keys[i]);
+            // We can only safely call stringKeyToInt on our internal 4-byte format
+            if(node->keys[i].length() == 4) {
+                std::cout << Node::stringKeyToInt(node->keys[i]);
+            } else {
+                std::cout << "INVALID_INT_KEY_FORMAT";
+            }
         } else {
             std::cout << "'" << node->keys[i] << "'";
         }

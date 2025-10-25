@@ -26,6 +26,7 @@ Clients interact with the engine via a CLI. All data is persisted to disk, with 
   * **Default Primary Key:** Automatically generates an auto-incrementing `row_num` primary key if one isn't specified.
 
 ## Architecture
+![](assests/architecture.png)
 
 The engine's storage model is based on a **Heap File** with a **Primary Index**. For each table, three files are created within its database directory:
 

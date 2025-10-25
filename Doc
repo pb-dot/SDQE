@@ -101,7 +101,7 @@ Block 0: The Metadata Header--> This block is special. It's always at offset 0 a
 
 Blocks 1...N: Node Data --> All other blocks in the file will store the B-Tree nodes (one node per block).
 
-Metadata Header (Block 0) Layout
+Metadata Header (Block 0) Laout
 This block will contain:
 
 Magic Number (e.g., 8 bytes): A custom byte sequence like "\xDE\xAD\xBE\xEFBTR3" to identify this file as our B-Tree.
@@ -112,7 +112,7 @@ Key Type (1 byte): A flag to define the key type for this entire tree.
 
 0x01: Keys are char[255] (255 bytes).
 
-(Note: A single tree cannot mix key types. You create either an int-keyed tree or a string-keyed tree.)
+(Note: A single tree cannot mix key types. ou create either an int-keyed tree or a string-keyed tree.)
 
 Minimum Degree t (4 bytes): The minimum degree of the B-Tree. This value will be calculated when the tree is created, based on the key_type and block_size.
 
@@ -125,7 +125,7 @@ Each node will be read/written as a single 4096-byte block. The C++ BTreeNode cl
 
 Pointers (BTreeNode** children) will be replaced with 8-byte file offsets.
 
-Node Block Layout (4096 bytes)
+Node Block Laout (4096 bytes)
 Node Header (e.g., 16 bytes)
 
 is_leaf (1 byte): 1 if leaf, 0 if internal.
@@ -134,7 +134,7 @@ n (4 bytes): The current number of keys in this node.
 
 (Padding, 11 bytes): To align the following data.
 
-Data Arrays This is the main body of the node. The layout depends on the key_type stored in the metadata header. The t value dictates the size of these arrays.
+Data Arrays This is the main body of the node. The laout depends on the key_type stored in the metadata header. The t value dictates the size of these arrays.
 
 Array 1: Child Offsets (Size: 2t * 8 bytes)
 
@@ -284,7 +284,7 @@ Because of CoW, every successful insert or update, no matter how small, must pro
 
 Here is the chain reaction:
 
-You want to insert (5, 50) into a leaf node (Leaf_A at offset 0x1000).
+ou want to insert (5, 50) into a leaf node (Leaf_A at offset 0x1000).
 
 We read Leaf_A into memory. We see it's not full.
 
@@ -641,11 +641,11 @@ STR: Always uses 255 bytes (for const size_t DB_STRING_SIZE).
 The Record::serialize function creates this format. It builds a byte buffer (a std::vector<char>) for a single record by "gluing" all the column data together in the order defined by the schema.
 
 Example
-Let's say you have a table users with WITH_COL {(INT,id), (STR,name)}:
+Let's say ou have a table users with WITH_COL {(INT,id), (STR,name)}:
 
 Schema Check: The Schema class calculates the total record_size as 8 (for id) + 255 (for name) = 263 bytes.
 
-Serialization: When you INSERT_ROW {id=10, name="Bob"}:
+Serialization: When ou INSERT_ROW {id=10, name="Bob"}:
 
 The serialize function creates an empty 263-byte buffer, all filled with nulls (\0).
 
@@ -665,14 +665,14 @@ File: users.data
 ^            ^                ^            ^
 Byte 0       Byte 8           Byte 263     Byte 271
 2. The B-Tree Value (The "Pointer")
-The int64_t value you store in your B-Tree is not the data itself.
+The int64_t value ou store in our B-Tree is not the data itself.
 
 The value is the byte offset (a "record pointer") indicating where that record begins in the .data file.
 
 This is managed by the Table::insert_record and Table::find_record_by_key methods.
 
 How INSERT_ROW Uses It:
-You execute: INSERT_ROW INTO {users} ... VALUES {id=10, name="Alice"}
+ou execute: INSERT_ROW INTO {users} ... VALUES {id=10, name="Alice"}
 
 Table::insert_record is called.
 
@@ -684,7 +684,7 @@ It writes those 263 bytes to users.data. The file is now 263 bytes long.
 
 It calls btree.insert(10, 0). The B-Tree now stores: (Key: 10, Value: 0).
 
-You execute: INSERT_ROW INTO {users} ... VALUES {id=5, name="Bob"}
+ou execute: INSERT_ROW INTO {users} ... VALUES {id=5, name="Bob"}
 
 insert_record gets the new end-of-file position, which is now 263.
 
@@ -695,7 +695,7 @@ It appends those 263 bytes. The file is now 526 bytes long.
 It calls btree.insert(5, 263). The B-Tree now stores: (Key: 5, Value: 263) and (Key: 10, Value: 0).
 
 How SELECT Uses It:
-You execute: SELECT {*} FROM {users} ... WHERE_INDEX_IS {id = 5}
+ou execute: SELECT {*} FROM {users} ... WHERE_INDEX_IS {id = 5}
 
 Table::find_record_by_key is called with the key 5.
 
@@ -716,9 +716,9 @@ See Btree folder as a seperate black box
 Then start with file test/overallTest --> to see code flow
 
 *****************Overall Work flow ****************
-User (CLI): This represents the human user interacting with your database through the command line.
+User (CLI): This represents the human user interacting with our database through the command line.
 
-**main.cpp (REPL)**: This is your main program. It reads input from the user, decides if it's a meta-command (like .help or .quit) or an SQL query.
+**main.cpp (REPL)**: This is our main program. It reads input from the user, decides if it's a meta-command (like .help or .quit) or an SQL query.
 
 Self-loop: Meta-commands are handled directly within main.cpp.
 
@@ -746,6 +746,6 @@ To Record: It uses Record objects to serialize and deserialize row data when rea
 
 **Schema**: A data-holding class that defines the metadata of a table (columns, index column, next auto-increment ID).
 
-**BTree**: This is your provided external B-Tree implementation. It handles efficient indexed storage and retrieval of (Key, Offset) pairs.
+**BTree**: This is on disk B-Tree implementation. It handles efficient indexed storage and retrieval of (Key, Offset) pairs.
 
 **Record**: A data-holding class that represents a single row of data, usually as a std::map<std::string, Value>. It knows how to serialize itself into a byte buffer for disk storage and deserialize from one.

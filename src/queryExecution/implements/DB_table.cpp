@@ -1,7 +1,7 @@
 #include "db_table.hpp"
 #include <iostream>
 #include <vector>
-#include <limits> // For std::numeric_limits
+#include <limits>
 
 Table::Table(const std::string& schema_path, const std::string& index_path,
              const std::string& data_path)
@@ -63,6 +63,7 @@ std::unique_ptr<Record> Table::read_record_at_offset(int32_t offset) {
     if (!m_is_open || offset < 0) return nullptr;
 
     // Cast 32-bit offset to 64-bit streamoff for file I/O
+    //Need -->table.data use 64 bit but table.idx use 32 for int
     data_file.seekg(static_cast<std::streamoff>(offset));
     if (data_file.fail()) {
         std::cerr << "Error: Failed to seek in data file to offset " << offset << std::endl;
@@ -100,7 +101,7 @@ bool Table::write_record_at_offset(const Record& record, int32_t offset) {
     return true;
 }
 
-// --- Public Data Manipulation Methods (Corrected) ---
+// --- Public Data Manipulation Methods  ---
 
 int32_t Table::insert_record(Record& record) {
     if (!m_is_open) return -1;
@@ -138,7 +139,7 @@ int32_t Table::insert_record(Record& record) {
 std::unique_ptr<Record> Table::find_record_by_key(const Value& key) {
     if (!m_is_open) return nullptr;
 
-    std::optional<int32_t> offset_opt; // <-- CHANGED to int32_t
+    std::optional<int32_t> offset_opt;
     if (std::holds_alternative<int64_t>(key)) {
         // Cast 64-bit INT key to 32-bit for search
         int32_t key32 = static_cast<int32_t>(std::get<int64_t>(key));
@@ -195,7 +196,7 @@ std::vector<std::unique_ptr<Record>> Table::find_records_by_range(const Value& l
 bool Table::delete_record_by_key(const Value& key) {
     if (!m_is_open) return false;
 
-    std::optional<int32_t> offset_opt; // <-- CHANGED to int32_t
+    std::optional<int32_t> offset_opt;
     if (std::holds_alternative<int64_t>(key)) {
         int32_t key32 = static_cast<int32_t>(std::get<int64_t>(key));
         offset_opt = btree.search(key32);
@@ -238,7 +239,7 @@ bool Table::update_record_by_key(const Value& key, const std::map<std::string, V
         return false;
     }
 
-    std::optional<int32_t> offset_opt; // <-- CHANGED to int32_t
+    std::optional<int32_t> offset_opt;
     if (std::holds_alternative<int64_t>(key)) {
         int32_t key32 = static_cast<int32_t>(std::get<int64_t>(key));
         offset_opt = btree.search(key32);

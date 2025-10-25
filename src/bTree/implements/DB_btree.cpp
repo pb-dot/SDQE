@@ -1,7 +1,7 @@
 #include "db_btree.hpp"
 #include <iostream>
 #include <stdexcept>
-#include <algorithm> // for std::find
+#include <algorithm>
 
 // --- BTree Public API ---
 
@@ -29,7 +29,7 @@ void BTree::close() {
     file.close();
 }
 
-// --- MODIFIED: All public functions now call commitRootAndGarbageCollect ---
+
 
 void BTree::insert(int32_t key, int32_t value) {
     if (!file.isOpen()) throw std::runtime_error("BTree file not open.");
@@ -48,14 +48,14 @@ void BTree::insert(int32_t key, int32_t value) {
         root->values[0] = value;
         root->n = 1;
         offset_t new_root_offset = writeNode(root);
-        // --- MODIFIED: Call new 2-phase commit function ---
+        //  Call  2-phase commit function ---
         if (file.commitRootAndGarbageCollect(new_root_offset)) {
             metadata.root_offset = new_root_offset; // Update in-memory copy
         }
     } else {
         offset_t final_root_offset = insertRecursive(old_root_offset, k, value);
         if (final_root_offset != old_root_offset) {
-            // --- MODIFIED: Call new 2-phase commit function ---
+            // Call 2-phase commit function ---
             if (file.commitRootAndGarbageCollect(final_root_offset)) {
                 metadata.root_offset = final_root_offset;
             }
@@ -302,8 +302,7 @@ std::optional<int32_t> BTree::searchRecursive(offset_t node_offset, const std::s
     return searchRecursive(node->children[i], k);
 }
 
-// --- BTree Private: Update (CoW) ---
-// --- ALL CoW functions now correctly call file.freeBlock() ---
+
 
 offset_t BTree::updateRecursive(offset_t node_offset, const std::string& k, int32_t new_value, bool& updated) {
     if (node_offset == 0) return 0;
@@ -331,7 +330,7 @@ offset_t BTree::updateRecursive(offset_t node_offset, const std::string& k, int3
     return new_parent_offset;
 }
 
-// --- BTree Private: Insert (CoW) ---
+// --- BTree Private: Insert (CoW -Copy On Write) ---
 
 offset_t BTree::insertRecursive(offset_t node_offset, const std::string& k, int32_t v) {
     auto node = readNode(node_offset);

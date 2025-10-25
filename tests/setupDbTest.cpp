@@ -4,7 +4,7 @@
 
 int main() {
     // --- THIS IS THE "RESET" PROGRAM ---
-    // Clean up from previous runs
+    // Clean up from previous runs and makes a new db
     std::filesystem::remove_all("test_db");
     std::filesystem::remove_all("string_db");
 

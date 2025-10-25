@@ -24,7 +24,7 @@ public:
      * @brief Inserts a record.
      * @return The 32-bit file offset (row pointer), or -1 on failure.
      */
-    int32_t insert_record(Record& record); // <-- CHANGED from int64_t
+    int32_t insert_record(Record& record);
 
     std::unique_ptr<Record> find_record_by_key(const Value& key);
 
@@ -41,12 +41,12 @@ private:
     /**
      * @brief Reads a record from a 32-bit offset.
      */
-    std::unique_ptr<Record> read_record_at_offset(int32_t offset); // <-- CHANGED from int64_t
+    std::unique_ptr<Record> read_record_at_offset(int32_t offset);
 
     /**
      * @brief Writes a record to a 32-bit offset.
      */
-    bool write_record_at_offset(const Record& record, int32_t offset); // <-- CHANGED from int64_t
+    bool write_record_at_offset(const Record& record, int32_t offset);
 
     // File paths
     std::string m_schema_path;

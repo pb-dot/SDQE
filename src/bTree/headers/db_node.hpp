@@ -4,60 +4,7 @@
 #include <vector>
 #include <string>
 #include <memory>
-#include <cstring> // For memcpy
-
-/*
-Calculating t
-A full node contains 2t - 1 keys and 2t child pointers.
-
-Let's do the math.
-
-Total Block Size: 4096 bytes.
-
-Node Header: We need space for is_leaf (1 byte) and n (number of keys actually present) (4 bytes).
-Let's allocate 16 bytes for the header to be safe and for alignment.
-
-Available Space: 4096 - 16 = 4080 bytes.
-
-Data: We need to fit (2t - 1) keys, (2t - 1) values, and 2t child pointers.
-
-Let max_keys = 2t - 1. This means max_children = 2t = max_keys + 1.
-
-Our equation must be: Size(keys) + Size(values) + Size(children) <= 4080
-
-Size(values) = max_keys * sizeof(int) = max_keys * 4 bytes.
-
-Size(children) = max_children * sizeof(long long) = (max_keys + 1) * 8 bytes (for 64-bit file offsets).
-
-So, Size(keys) + (max_keys * 4) + ((max_keys + 1) * 8) <= 4080 Size(keys) + 4*max_keys + 8*max_keys + 8 <= 4080 Size(keys) + 12*max_keys <= 4072
-
-Now we solve for max_keys based on the two key types.
-
-Case 1: int keys
-Size(keys) = max_keys * sizeof(int) = max_keys * 4 bytes.
-
-Our equation becomes: (max_keys * 4) + (12 * max_keys) <= 4072 16 * max_keys <= 4072 max_keys <= 4072 / 16 max_keys <= 254.5
-
-The maximum number of keys must be an integer, so max_keys = 254.
-
-But max_keys must be an odd number (to be 2t - 1). So, we must use the largest odd number less than or equal to 254, which is max_keys = 253.
-
-Now we find t: 2t - 1 = 253 2t = 254 t = 127 (for int keys)
-
-Case 2: string keys
-Size(keys) = max_keys * 255 bytes (for char[255]).
-
-Our equation becomes: (max_keys * 255) + (12 * max_keys) <= 4072 267 * max_keys <= 4072 max_keys <= 4072 / 267 max_keys <= 15.25...
-
-The maximum number of keys must be an integer, so max_keys = 15.
-
-This is already an odd number, so max_keys = 15.
-
-Now we find t: 2t - 1 = 15 2t = 16 t = 8 (for string keys)
-
-*/
-
-
+#include <cstring>
 
 // --- Node Serialized Header ---
 // This header exists at the start of every node block.
@@ -86,7 +33,7 @@ public:
 
     // --- Properties ---
     bool is_leaf;
-    uint32_t n;
+    uint32_t n;  // current number of keys
     uint32_t t; // min degree
     KeyType key_type;
 
@@ -109,7 +56,6 @@ public:
     void serialize(char* buffer) const;
 
     // --- Key/Value Helpers ---
-    // (Used by BTree logic)
 
     // Splits this (full) node's child `i` into this node and `new_sibling`
     void splitChild(int i, std::shared_ptr<Node> child_to_split, std::shared_ptr<Node> new_sibling);

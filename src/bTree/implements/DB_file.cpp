@@ -32,7 +32,7 @@ bool DbFile::create(const std::string& filename, KeyType key_type, uint32_t& t_o
     header.key_type = key_type;
     header.t = calculateT(key_type);
 
-    // --- FIX: Check for invalid 't' ---
+
     if (header.t == 0) {
         std::cerr << "Error: BLOCK_SIZE " << BLOCK_SIZE
                   << " is too small to create a B-Tree with this key type." << std::endl;
@@ -41,7 +41,7 @@ bool DbFile::create(const std::string& filename, KeyType key_type, uint32_t& t_o
         std::remove(filename.c_str());
         return false;
     }
-    // --- END FIX ---
+
 
     t_out = header.t;
 
@@ -86,7 +86,7 @@ bool DbFile::open(const std::string& filename) {
 void DbFile::close() {
 
     if (file.is_open()) {
-        // --- MODIFIED: Try to commit any pending free blocks on close ---
+        // Try to commit any pending free blocks on close ---
         // This is a "best effort" to clean up any leaks from a
         // previous crash *after* Phase 1 but *before* Phase 2.
         if (!pending_free_list.empty()) {
@@ -137,7 +137,6 @@ offset_t DbFile::allocateBlock() {
 
     offset_t new_offset = 0;
 
-    // --- MODIFIED: This is now 100% crash-safe ---
     // It *only* reads from the committed free list.
     // It can *never* see a block from the pending_free_list,
     // solving the "reuse-after-free-in-same-transaction" bug.
@@ -145,7 +144,7 @@ offset_t DbFile::allocateBlock() {
         new_offset = header.free_list_head;
 
         char buffer[BLOCK_SIZE];
-        // We must use readBlock, not raw fstream, to get mutex protection
+
         if (!readBlock(new_offset, buffer)) {
              std::cerr << "CRITICAL: Failed to read from free list block " << new_offset << std::endl;
              // This is bad. Fallback to extending the file.
@@ -179,7 +178,7 @@ offset_t DbFile::allocateBlock() {
     return new_offset;
 }
 
-// --- MODIFIED: This is now a lightweight, in-memory-only operation ---
+// This is a lightweight, in-memory-only operation ---
 void DbFile::freeBlock(offset_t offset) {
     if (offset == 0) return;
     // Just add the block to the in-memory pending list.
@@ -192,7 +191,7 @@ MetadataHeader DbFile::getMetadata() const {
     return header;
 }
 
-// --- NEW: The two-phase commit logic ---
+// --- The two-phase commit logic ---
 bool DbFile::commitRootAndGarbageCollect(offset_t new_root_offset) {
     // This is the *only* function that should write the metadata header.
     // It acts as the "commit" point for the transaction.
@@ -239,7 +238,7 @@ bool DbFile::commitRootAndGarbageCollect(offset_t new_root_offset) {
     return true;
 }
 
-// --- NEW: This function *safely* adds pending blocks to the free list ---
+// --- This function *safely* adds pending blocks to the free list ---
 bool DbFile::commitFreeList() {
     // This function must be called *after* the data commit.
     // It assumes it is already inside the file_mutex lock.
@@ -247,10 +246,6 @@ bool DbFile::commitFreeList() {
         return true; // Nothing to do
     }
 
-    // This is the "write to old blocks" step that you
-    // correctly identified as dangerous. It is now *safe*
-    // because the data commit is *already done*.
-    // The B-Tree no longer points to these blocks.
     try {
         // We use the *current* in-memory header.free_list_head,
         // which was set by allocateBlock() during the transaction.
@@ -304,12 +299,10 @@ uint32_t DbFile::calculateT(KeyType key_type) {
 
     int max_keys = (available_space - 8) / (key_size + 12);
 
-    // --- FIX: Check for valid max_keys ---
     // A B-Tree must have t >= 2, which means max_keys = 2t-1 >= 3.
     if (max_keys < 3) {
         return 0; // Signal failure: block size is too small
     }
-    // --- END FIX ---
 
     if (max_keys % 2 == 0) {
         max_keys--;

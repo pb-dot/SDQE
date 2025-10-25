@@ -6,25 +6,37 @@ Project : Structured_Data_Query_Engine -> Relational data storage with minimal q
 Client(User of this prog[db engine]) will interact with this prog in CLI REPL
 (read eval print loop)mode and first enter/create databases and tables inside them.
 Then use CRUD syntax supported by our prog to ask Query on the tables he entered and get results.
-The tables persist on disk in the form of  database (directory) which can have multiple tables(1 table = 2files)
-
+The tables persist on disk in the form of  database (directory) which can have multiple tables(1 table = 3files)
+It is a single user Engine
 
 
 ------Restriction I have placed on by db engine-->
 A. Data type supported by columns [int , string(255 chars max length)]
 B. No parallel clients/process that will interact with dbs
 C. CRUD(create read update delete) Syntax supported:-
-    1. SELECT <col names> FROM <table name> INDEX_BY <expr> FILTER_BY <expr>
-    2. CREATE_DB <database name>
-    3. CREATE_TABLE <table_name> IN <database_name> WITH_COL<(INT,cola) ,(STR ,colb) ,(STR ,colc)>
-    WITH_INDEX <colc>
-    4. INSERT_ROW <cola = 55, colb="str1", colc="str2"> IN <table_name , db_name>
-    5. DELETE_ROW <expr>
-    6. UPDATE_ROW <cola = 55, colb="str1", colc="str2">  WHERE <expr>
-INDEX_BY <expr> can be col_name >50 and col_name <100 where col_name will act as Index.
-Both INDEX_BY and FILTER_BY are optional.
+
+    Create DB: CREATE_DB {database_name}
+
+    Create Table: CREATE_TABLE {table_name} IN {db_name} WITH_COL {(INT,id),(STR,name)} WITH_INDEX {id}
+
+    Insert: INSERT_ROW INTO {table_name} IN {db_name} VALUES {id=10, name="Alice"}
+
+    Select (Point): SELECT {*} FROM {tableName} IN {db_name} WHERE_INDEX_IS {id = 10}
+
+    Select (Range): SELECT {col_name} FROM {tableName} IN {db_name} WHERE_INDEX_IS {id > 5 AND id < 20}
+
+    Delete: DELETE_ROW FROM {tableName} IN {db_name} WHERE_INDEX_IS {id = 5}
+
+    Update: UPDATE_ROW {tableName} IN {db_name} SET {name="Robert"} WHERE_INDEX_IS {id = 10}
+
+In create table --> WITH_INDEX is optional , if not provided generates a column with name row_num and make it as index
+In Update --> For now dont support update index column (provision is their in btree for update)
+In Update and Delete only support simple WHERE_INDEX_IS query with index = some value
+
 D. Query can Run 1 table at time ie No joins / order by (sort) 
 #To support sorting use K-way External Merge sort as Cant bring full table in -memory
+E. No explicit transaction supported , ie each Query is a transaction in itself but cant group
+multiple queries into a single transaction --> that would need a Write Ahead Log (Wal) strategy
 
 
 ------ Implementation Caveats ----------->
@@ -52,6 +64,7 @@ To write a node in disc --> soln convert struct to char[]ie serialize it.
 | 2B                       |2B     | nkeys * 8B     | nkeys * 2*8B |
 
 Now each node of the B-tree will be a each line in the file table.idx
+Inside a Node when search for key --> Linear search
 
 Terminology --> File --Array of Blocks/Nodes/Pages
 B-tree has Blocks/Nodes/Pages . 1 Node size = INT * 1 OS page size(4096B).
@@ -76,7 +89,7 @@ Step2 : Search the apt key in (B+tree) and get the Row id in table.data as value
 Step3 : Fetch the row using row-id and display it as result
 
 
-------------- About B+tree Implementation -----------------------
+------------- About Btree Implementation -----------------------
 Here's my proposed approach to create a durable, consistent, disk-based B-Tree.
 
 This approach is based on using a single file, fixed-size blocks (pages), shadow paging (copy-on-write) for consistency, and a metadata header to manage the tree.
@@ -191,7 +204,7 @@ No problem. When we restart, we read Block 0. The root_node_offset is 24576. Thi
 This copy-on-write mechanism provides perfect ACI (Atomicity, Consistency, Isolation) for each operation. Durability is provided by the fsync() call on the metadata block.
 
 
-PagedFile: A class to manage the file, block allocation, and the free list.
+DbFile: A class to manage the file, block allocation, and the free list.
 
 Node: A class that can serialize/deserialize to/from a 4KB byte buffer.
 
@@ -600,4 +613,98 @@ Propagate and Commit:
 The merge function returns the new parent offset (0xC000) to removeRecursive.
 
 This change propagates up to the root, and the final commit is handled by the top-level remove function, just like in Scenario 1. The two-phase commit safely garbage-collects all three old blocks.
-------------------------------------------------------------------------
+-----------------------------------------------------------------------
+
+Now every table is made of 3 files .schema , .data , .idx
+
+Need of the schema file --> We could easily store its content in header of .data but
+Assuming .data to be very big file and schema contains the "Next Row id" auto incrementing 
+default primary index , so writing frequently to the head of .data (big file) is slow
+
+How .data and .idx interact
+--> Parser parses the Query and fills up the components of the query in a struct made for
+that command components
+--> Execute uses the Table class to interact between the .idx and .data file as shown below-
+This is the most fundamental part of the engine!
+
+Here’s the breakdown.
+
+1. The .data File Format 
+The table.data file is a heap file, which is just a simple, unstructured pile of data. We store records in it by appending them to the end.
+
+The format of each record inside this file is fixed-length:
+
+INT: Always uses 8 bytes (for int64_t).
+
+STR: Always uses 255 bytes (for const size_t DB_STRING_SIZE).
+
+The Record::serialize function creates this format. It builds a byte buffer (a std::vector<char>) for a single record by "gluing" all the column data together in the order defined by the schema.
+
+Example
+Let's say you have a table users with WITH_COL {(INT,id), (STR,name)}:
+
+Schema Check: The Schema class calculates the total record_size as 8 (for id) + 255 (for name) = 263 bytes.
+
+Serialization: When you INSERT_ROW {id=10, name="Bob"}:
+
+The serialize function creates an empty 263-byte buffer, all filled with nulls (\0).
+
+It copies the 8-byte binary value of 10 into the first 8 bytes.
+
+It copies the string "Bob" into the next 255 bytes. Since "Bob" is 3 characters (+ 1 null terminator), it looks like this: B, o, b, \0, \0, \0, ... (padded with 251 more nulls).
+
+The table.data file is just these 263-byte blocks concatenated together:
+
+Plaintext
+
+File: users.data
+
+<--- Record 1 (263 bytes) ---><--- Record 2 (263 bytes) ---><--- ...
+[ 8-byte ID ][ 255-byte NAME ][ 8-byte ID ][ 255-byte NAME ][...
+[ 0A 00... ] [ 'A''l''i''c''e''\0'... ] [ 05 00... ] [ 'B''o''b''\0''\0''\0'... ] [...
+^            ^                ^            ^
+Byte 0       Byte 8           Byte 263     Byte 271
+2. The B-Tree Value (The "Pointer")
+The int64_t value you store in your B-Tree is not the data itself.
+
+The value is the byte offset (a "record pointer") indicating where that record begins in the .data file.
+
+This is managed by the Table::insert_record and Table::find_record_by_key methods.
+
+How INSERT_ROW Uses It:
+You execute: INSERT_ROW INTO {users} ... VALUES {id=10, name="Alice"}
+
+Table::insert_record is called.
+
+It first gets the current end-of-file position of users.data. Let's say the file is empty, so the offset is 0.
+
+It serializes the "Alice" record (263 bytes) as described above.
+
+It writes those 263 bytes to users.data. The file is now 263 bytes long.
+
+It calls btree.insert(10, 0). The B-Tree now stores: (Key: 10, Value: 0).
+
+You execute: INSERT_ROW INTO {users} ... VALUES {id=5, name="Bob"}
+
+insert_record gets the new end-of-file position, which is now 263.
+
+It serializes the "Bob" record (263 bytes).
+
+It appends those 263 bytes. The file is now 526 bytes long.
+
+It calls btree.insert(5, 263). The B-Tree now stores: (Key: 5, Value: 263) and (Key: 10, Value: 0).
+
+How SELECT Uses It:
+You execute: SELECT {*} FROM {users} ... WHERE_INDEX_IS {id = 5}
+
+Table::find_record_by_key is called with the key 5.
+
+It calls btree.search(5).
+
+The B-Tree returns the stored int64_t value: 263.
+
+The function then tells the file system: "Go to the users.data file and seek to byte 263."
+
+From that exact position, it reads record_size (263) bytes of data.
+
+This 263-byte block (the "Bob" record) is passed to Record::deserialize, which unpacks the bytes back into the (id, name) map.

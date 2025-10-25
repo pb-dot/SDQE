@@ -3,7 +3,7 @@
 #include <string>
 #include <map>
 #include <memory>
-#include "db_table.hpp"
+#include "db_table.hpp" //interface between parser and btree
 #include "db_parser.hpp" // Our robust parser
 
 /**
@@ -15,7 +15,7 @@ public:
     DatabaseEngine();
 
     /**
-     * @brief Executes a query from your custom language.
+     * @brief Executes a query from our custom language.
      * @param query The raw query string.
      */
     void execute(const std::string& query);

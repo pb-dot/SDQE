@@ -1,4 +1,4 @@
-The Doc will contain my learnings from this project and also serve as Readme
+The Doc will contain my learnings from this project
 
 Project : Structured_Data_Query_Engine -> Relational data storage with minimal query support
 
@@ -621,10 +621,10 @@ Need of the schema file --> We could easily store its content in header of .data
 Assuming .data to be very big file and schema contains the "Next Row id" auto incrementing 
 default primary index , so writing frequently to the head of .data (big file) is slow
 
-How .data and .idx interact
+*****************Overall Work flow ****************
 --> Parser parses the Query and fills up the components of the query in a struct made for
 that command components
---> Execute uses the Table class to interact between the .idx and .data file as shown below-
+--> dBEngine::Execute() uses the Table class to interact between the .idx and .data file as shown below-
 This is the most fundamental part of the engine!
 
 Here’s the breakdown.
@@ -708,3 +708,15 @@ The function then tells the file system: "Go to the users.data file and seek to 
 From that exact position, it reads record_size (263) bytes of data.
 
 This 263-byte block (the "Bob" record) is passed to Record::deserialize, which unpacks the bytes back into the (id, name) map.
+
+-------------------------->
+**To Understand code flow**
+
+See Btree folder as a seperate black box
+Then start with file test/overallTest --> to see code flow
+
+*****************Overall Work flow ****************
+--> Parser parses the Query and fills up the components of the query in a struct made for
+that command components
+--> dBEngine::Execute() uses the Table class to interact between the .idx and .data file as shown below-
+This is the most fundamental part of the engine!

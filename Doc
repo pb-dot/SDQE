@@ -1,6 +1,6 @@
 The Doc will contain my learnings from this project and also serve as Readme
 
-Project : Relational_Data_Engine -> structured data storage with minimal query support
+Project : Structured_Data_Query_Engine -> Relational data storage with minimal query support
 
 -------What this prog (db engine) does -->
 Client(User of this prog[db engine]) will interact with this prog in CLI REPL

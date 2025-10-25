@@ -716,7 +716,36 @@ See Btree folder as a seperate black box
 Then start with file test/overallTest --> to see code flow
 
 *****************Overall Work flow ****************
---> Parser parses the Query and fills up the components of the query in a struct made for
-that command components
---> dBEngine::Execute() uses the Table class to interact between the .idx and .data file as shown below-
-This is the most fundamental part of the engine!
+User (CLI): This represents the human user interacting with your database through the command line.
+
+**main.cpp (REPL)**: This is your main program. It reads input from the user, decides if it's a meta-command (like .help or .quit) or an SQL query.
+
+Self-loop: Meta-commands are handled directly within main.cpp.
+
+To DatabaseEngine: SQL queries are passed to the DatabaseEngine for processing.
+
+**DatabaseEngine**: This is the core logic engine.
+
+To Parser: When it receives an SQL query, its first step is to send it to the Parser.
+
+From Parser: It receives a structured ParsedCommand back from the Parser.
+
+To Table: Based on the ParsedCommand (e.g., InsertRowCommand, SelectCommand), it calls the appropriate methods on a Table object.
+
+To main.cpp: After executing a command, it returns results or status messages back to main.cpp for display.
+
+**Parser**: This component's sole responsibility is to take a raw SQL query string and transform it into a strongly-typed command object (like CreateDbCommand, InsertRowCommand, etc.) using a std::variant.
+
+**Table**: This class encapsulates all operations related to a single table. It acts as an abstraction layer for the physical storage.
+
+To Schema: It uses the Schema object to understand the table's structure (column names, types, sizes).
+
+To BTree: It interacts with the BTree for index operations (inserting, searching, updating, deleting keys and their corresponding data file offsets).
+
+To Record: It uses Record objects to serialize and deserialize row data when reading from or writing to the .data file.
+
+**Schema**: A data-holding class that defines the metadata of a table (columns, index column, next auto-increment ID).
+
+**BTree**: This is your provided external B-Tree implementation. It handles efficient indexed storage and retrieval of (Key, Offset) pairs.
+
+**Record**: A data-holding class that represents a single row of data, usually as a std::map<std::string, Value>. It knows how to serialize itself into a byte buffer for disk storage and deserialize from one.

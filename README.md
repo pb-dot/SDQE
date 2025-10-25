@@ -82,6 +82,8 @@ These commands are built into the REPL for database management.
   * `.tables db_name`: Lists all tables in the specified database.
   * `.schema db_name table_name`: Prints the schema for a specific table.
 
+![](assests/welcomeHeader.png)
+
 ## Query Language Syntax
 
 All queries must follow the syntax below. Keywords are case-sensitive, and values are enclosed in curly braces `{}`.
@@ -125,6 +127,7 @@ Only supported for `INT` index columns.
 ```sql
 SELECT {name} FROM {users} IN {test_db} WHERE_INDEX_IS {id > 5 AND id < 20}
 ```
+![](assests/selectDemo.png)
 
 ### Delete Row
 
@@ -133,6 +136,7 @@ Only supports simple equality checks on the index column.
 ```sql
 DELETE_ROW FROM {users} IN {test_db} WHERE_INDEX_IS {id = 5}
 ```
+![](assests/deleteDemo.png)
 
 ### Update Row
 
@@ -141,6 +145,7 @@ Only supports simple equality checks on the index column.
 ```sql
 UPDATE_ROW {users} IN {test_db} SET {name="Robert"} WHERE_INDEX_IS {id = 10}
 ```
+![](assests/updateDemo.png)
 
 ## Limitations
 
